@@ -1,0 +1,16 @@
+# 定时备份任务配置
+
+# 每天凌晨2点执行本地备份
+0 2 * * * /app/scripts/backup.sh backup
+
+# 每周日凌晨3点执行AWS备份
+0 3 * * 0 /app/scripts/backup.sh backup-aws
+
+# 每周一凌晨3点执行GCP备份
+0 3 * * 1 /app/scripts/backup.sh backup-gcp
+
+# 每月1号凌晨4点执行完整备份并保留更长时间
+0 4 1 * * /app/scripts/backup.sh backup && find /app/backups -name "*$(date +\%Y\%m)*" -type f -exec cp {} /app/backups/monthly/ \;
+
+# 每天凌晨1点清理日志文件
+0 1 * * * find /app/logs -name "*.log" -type f -mtime +7 -delete

@@ -1,0 +1,82 @@
+flowchart TB
+    subgraph 前端层
+        Frontend[Next.js 14+ 前端应用]
+        MaterialUI[Material-UI 组件库]
+        SVGjs[SVG.js 可视化]
+        SocketIO_Client[Socket.io-client 实时通信]
+        
+        Frontend --> MaterialUI
+        Frontend --> SVGjs
+        Frontend --> SocketIO_Client
+    end
+
+    subgraph API网关层
+        BackendAPI[FastAPI 后端API服务]
+        JWT[JWT 认证服务]
+        SocketIO_Server[Socket.io 服务器]
+        
+        BackendAPI --> JWT
+        BackendAPI --> SocketIO_Server
+    end
+
+    subgraph AI服务层
+        AIService[Flask AI服务]
+        CircuitBERT[CircuitBERT 电路设计模型]
+        NLPService[NLP 自然语言处理]
+        
+        AIService --> CircuitBERT
+        AIService --> NLPService
+    end
+
+    subgraph EDA工具链层
+        SchemaGen[SKiDL 原理图生成]
+        Simulation[PySpice 电路模拟]
+        PCBLayout[KiCad PCB自动布线]
+        BOMGen[BOM 生成服务]
+        
+        SchemaGen --> Simulation
+        Simulation --> PCBLayout
+        PCBLayout --> BOMGen
+    end
+
+    subgraph 异步处理层
+        Celery[Celery 任务队列]
+        Redis[Redis 消息代理]
+        
+        Celery --> Redis
+    end
+
+    subgraph 存储层
+        SQLite[SQLite 数据库]
+        FileSystem[文件系统存储]
+        
+        SQLite --> FileSystem
+    end
+
+    %% 服务间交互
+    Frontend <--> BackendAPI
+    SocketIO_Client <--> SocketIO_Server
+    
+    BackendAPI --> AIService
+    BackendAPI --> EDA工具链层
+    BackendAPI --> Celery
+    BackendAPI --> SQLite
+    BackendAPI --> FileSystem
+    
+    AIService --> EDA工具链层
+    
+    EDA工具链层 --> Celery
+    EDA工具链层 --> FileSystem
+    
+    Celery --> SocketIO_Server
+    Celery --> FileSystem
+
+    %% 数据流向
+    Frontend -- 用户输入 --> BackendAPI
+    BackendAPI -- 自然语言请求 --> AIService
+    AIService -- 处理后电路需求 --> EDA工具链层
+    EDA工具链层 -- 设计结果 --> FileSystem
+    FileSystem -- 存储数据 --> SQLite
+    Celery -- 任务状态 --> SocketIO_Server
+    SocketIO_Server -- 实时更新 --> Frontend
+    FileSystem -- 设计文件 --> Frontend

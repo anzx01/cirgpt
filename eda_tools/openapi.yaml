@@ -1,0 +1,491 @@
+openapi: 3.0.0
+info:
+  title: EDA Circuit Design Generator API
+  description: Generates circuit design artifacts (schematic, PCB, BOM) from structured circuit data
+  version: 1.0.0
+paths:
+  /api/eda/netlist:
+    post:
+      summary: Generate SKiDL netlist
+      description: Creates a SKiDL netlist from structured circuit design data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitDesign'
+      responses:
+        '200':
+          description: Successfully generated netlist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  netlist_id:
+                    type: string
+                    description: Unique identifier for the generated netlist
+                  netlist_content:
+                    type: string
+                    description: SKiDL netlist content
+                  status:
+                    type: string
+                    example: "success"
+        '400':
+          description: Invalid circuit design data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/eda/schematic:
+    post:
+      summary: Generate KiCad schematic
+      description: Creates a KiCad schematic from SKiDL netlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                netlist_id:
+                  type: string
+                  description: Unique identifier for the SKiDL netlist
+              required:
+                - netlist_id
+      responses:
+        '200':
+          description: Successfully generated schematic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schematic_id:
+                    type: string
+                    description: Unique identifier for the generated schematic
+                  schematic_files:
+                    type: array
+                    items:
+                      type: string
+                    description: List of generated schematic files
+                  status:
+                    type: string
+                    example: "success"
+        '400':
+          description: Invalid netlist ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Netlist not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/eda/simulation:
+    post:
+      summary: Run circuit simulation
+      description: Simulates circuit behavior using PySpice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                netlist_id:
+                  type: string
+                  description: Unique identifier for the SKiDL netlist
+                simulation_params:
+                  type: object
+                  properties:
+                    simulation_type:
+                      type: string
+                      enum: [transient, dc, ac]
+                      example: "transient"
+                    start_time:
+                      type: string
+                      example: "0s"
+                    end_time:
+                      type: string
+                      example: "10ms"
+                    step_time:
+                      type: string
+                      example: "0.1ms"
+              required:
+                - netlist_id
+                - simulation_params
+      responses:
+        '200':
+          description: Successfully completed simulation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  simulation_id:
+                    type: string
+                    description: Unique identifier for the simulation
+                  simulation_results:
+                    type: object
+                    description: Simulation results data
+                  status:
+                    type: string
+                    example: "success"
+        '400':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Netlist not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Simulation failed or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/eda/pcb:
+    post:
+      summary: Generate PCB layout
+      description: Creates a PCB layout using KiCad's autorouter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schematic_id:
+                  type: string
+                  description: Unique identifier for the KiCad schematic
+                pcb_params:
+                  type: object
+                  properties:
+                    board_size:
+                      type: string
+                      example: "100mmx100mm"
+                    layers:
+                      type: integer
+                      enum: [2, 4, 6]
+                      example: 2
+                    trace_width:
+                      type: string
+                      example: "0.2mm"
+              required:
+                - schematic_id
+                - pcb_params
+      responses:
+        '200':
+          description: Successfully generated PCB layout
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pcb_id:
+                    type: string
+                    description: Unique identifier for the generated PCB
+                  pcb_files:
+                    type: array
+                    items:
+                      type: string
+                    description: List of generated PCB files
+                  status:
+                    type: string
+                    example: "success"
+        '400':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Schematic not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: PCB generation failed or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/eda/gerber:
+    post:
+      summary: Generate Gerber files
+      description: Creates Gerber manufacturing files from PCB layout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pcb_id:
+                  type: string
+                  description: Unique identifier for the PCB layout
+              required:
+                - pcb_id
+      responses:
+        '200':
+          description: Successfully generated Gerber files
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gerber_id:
+                    type: string
+                    description: Unique identifier for the Gerber files
+                  gerber_files:
+                    type: array
+                    items:
+                      type: string
+                    description: List of generated Gerber files
+                  status:
+                    type: string
+                    example: "success"
+        '400':
+          description: Invalid PCB ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: PCB not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Gerber generation failed or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/eda/bom:
+    post:
+      summary: Generate Bill of Materials
+      description: Creates a BOM from circuit design data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitDesign'
+      responses:
+        '200':
+          description: Successfully generated BOM
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bom_id:
+                    type: string
+                    description: Unique identifier for the BOM
+                  bom_data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        component_id:
+                          type: string
+                        part_number:
+                          type: string
+                        description:
+                          type: string
+                        quantity:
+                          type: integer
+                        manufacturer:
+                          type: string
+                        supplier:
+                          type: string
+                  status:
+                    type: string
+                    example: "success"
+        '400':
+          description: Invalid circuit design data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: BOM generation failed or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/eda/health:
+    get:
+      summary: Check API health
+      description: Returns the health status of the EDA generation service
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2023-10-05T14:48:00.000Z"
+
+components:
+  schemas:
+    CircuitDesign:
+      type: object
+      properties:
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/CircuitComponent'
+        connections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CircuitConnection'
+        constraints:
+          $ref: '#/components/schemas/CircuitConstraints'
+      required:
+        - components
+        - connections
+        - constraints
+
+    CircuitComponent:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Component type
+          example: "microcontroller"
+        model:
+          type: string
+          description: Component model (if applicable)
+          example: "Arduino UNO"
+        value:
+          type: string
+          description: Component value (if applicable)
+          example: "220Ω"
+        footprint:
+          type: string
+          description: Component footprint (if applicable)
+          example: "0805"
+        color:
+          type: string
+          description: Component color (if applicable)
+          example: "red"
+        forward_voltage:
+          type: string
+          description: Forward voltage (if applicable)
+          example: "2.0V"
+        pins:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComponentPin'
+      required:
+        - type
+
+    ComponentPin:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Pin name
+          example: "D13"
+        number:
+          type: integer
+          description: Pin number
+          example: 13
+        function:
+          type: string
+          description: Pin function
+          example: "digital_output"
+
+    CircuitConnection:
+      type: object
+      properties:
+        from:
+          type: string
+          description: Source component and pin
+          example: "Arduino.D13"
+        to:
+          type: string
+          description: Destination component and pin
+          example: "R1.1"
+      required:
+        - from
+        - to
+
+    CircuitConstraints:
+      type: object
+      properties:
+        voltage:
+          type: string
+          description: Power supply voltage
+          example: "5V"
+        current_limit:
+          type: string
+          description: Maximum current
+          example: "20mA"
+        frequency:
+          type: string
+          description: Operating frequency (if applicable)
+          example: "1Hz"
+        temperature_range:
+          type: string
+          description: Operating temperature range (if applicable)
+          example: "-20°C to 70°C"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "Invalid circuit design data"
+        code:
+          type: integer
+          description: Error code
+          example: 400
+        details:
+          type: string
+          description: Additional error details (if applicable)
+          example: "Missing required component field: type"
+        suggestions:
+          type: array
+          items:
+            type: string
+          description: Suggestions for fixing the error (if applicable)
+          example: ["Please ensure all components have a valid type field"]
