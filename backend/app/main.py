@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import ai, eda, health, circuit
 from app.config import settings
+from app.websocket.socket_manager import socket_manager
 
 app = FastAPI(title="Circuit Design API Gateway", version="1.0.0")
 
@@ -20,6 +21,15 @@ app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(eda.router, prefix="/api/eda", tags=["eda"])
 app.include_router(circuit.router, prefix="/api/circuit", tags=["circuit"])
 
+# Mount Socket.io server
+from socketio import ASGIApp
+socket_app = ASGIApp(socket_manager.get_app())
+app.mount("/socket.io", socket_app)
+
 @app.get("/")
 async def root():
-    return {"message": "Circuit Design API Gateway", "version": "1.0.0"}
+    return {
+        "message": "Circuit Design API Gateway",
+        "version": "1.0.0",
+        "websocket": "Socket.io available at /socket.io"
+    }

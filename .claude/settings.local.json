@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(test:*)",
+      "Bash(redis-cli:*)",
+      "Bash(python:*)",
+      "Bash(./venv/Scripts/pip:*)",
+      "Bash(py:*)",
+      "Bash(winget install:*)",
+      "Bash(\"D:\\Python\\Python310\\python.exe\":*)",
+      "Bash(/d/Python/Python310/python.exe:*)",
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Bash(cat:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

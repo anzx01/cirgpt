@@ -1,35 +1,210 @@
-import React from 'react'
+"use client";
+
+import React from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  Container,
+  Box,
+  Typography,
+  Button,
+  Grid,
+  Card,
+  CardContent,
+  CardActions
+} from '@mui/material';
+import {
+  AutoAwesome as AIIcon,
+  Schema as SchemaIcon,
+  ViewInAr as PcbIcon,
+  ArrowForward as ArrowIcon
+} from '@mui/icons-material';
 
 export default function Home() {
+  const router = useRouter();
+
+  const features = [
+    {
+      icon: <AIIcon sx={{ fontSize: 40, color: 'primary.main' }} />,
+      title: 'AI-Powered Design',
+      description: 'Describe your circuit in natural language and let AI create it for you'
+    },
+    {
+      icon: <SchemaIcon sx={{ fontSize: 40, color: 'secondary.main' }} />,
+      title: 'Automatic Schematics',
+      description: 'Generate circuit schematics automatically with interactive visualization'
+    },
+    {
+      icon: <PcbIcon sx={{ fontSize: 40, color: 'success.main' }} />,
+      title: 'Smart PCB Layout',
+      description: 'Get optimized PCB layouts with component placement and routing'
+    }
+  ];
+
   return (
-    <div style={{ textAlign: 'center', maxWidth: '1200px', margin: '0 auto' }}>
-      <h1 style={{ fontSize: '2.5rem', margin: '2rem 0' }}>
-        AI 驱动的电路设计系统
-      </h1>
-      <p style={{ fontSize: '1.2rem', color: '#666', marginBottom: '3rem' }}>
-        自动化、智能化的电路设计解决方案
-      </p>
+    <Container maxWidth="lg" sx={{ py: 8 }}>
+      {/* Hero Section */}
+      <Box sx={{ textAlign: 'center', mb: 12 }}>
+        <Typography
+          variant="h2"
+          component="h1"
+          gutterBottom
+          fontWeight="bold"
+          sx={{
+            background: 'linear-gradient(45deg, #1976d2 30%, #42a5f5 90%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            mb: 3
+          }}
+        >
+          AI Circuit Designer
+        </Typography>
+        <Typography variant="h5" color="text.secondary" paragraph sx={{ maxWidth: 700, mx: 'auto' }}>
+          Transform your ideas into complete circuit designs in seconds.
+          Just describe what you want, and watch AI do the magic.
+        </Typography>
+        <Button
+          variant="contained"
+          size="large"
+          endIcon={<ArrowIcon />}
+          onClick={() => router.push('/design')}
+          sx={{
+            mt: 4,
+            px: 4,
+            py: 1.5,
+            fontSize: '1.2rem',
+            textTransform: 'none',
+            borderRadius: 2
+          }}
+        >
+          Start Designing Now
+        </Button>
+      </Box>
 
-      <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: '2rem', marginBottom: '3rem' }}>
-        <div style={{ border: '1px solid #eaeaea', borderRadius: '8px', padding: '2rem', width: '300px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' }}>
-          <h3 style={{ marginTop: 0 }}>电路描述解析</h3>
-          <p style={{ color: '#666' }}>使用AI技术解析自然语言描述，自动生成电路设计方案</p>
-        </div>
+      {/* Features Section */}
+      <Grid container spacing={4} sx={{ mb: 12 }}>
+        {features.map((feature, index) => (
+          <Grid item xs={12} md={4} key={index}>
+            <Card
+              sx={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-8px)',
+                  boxShadow: 4
+                }
+              }}
+            >
+              <CardContent sx={{ flexGrow: 1, textAlign: 'center' }}>
+                <Box sx={{ mb: 2 }}>
+                  {feature.icon}
+                </Box>
+                <Typography variant="h6" component="h3" gutterBottom fontWeight="bold">
+                  {feature.title}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {feature.description}
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </Grid>
 
-        <div style={{ border: '1px solid #eaeaea', borderRadius: '8px', padding: '2rem', width: '300px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' }}>
-          <h3 style={{ marginTop: 0 }}>原理图生成</h3>
-          <p style={{ color: '#666' }}>自动生成电路原理图，支持实时预览和编辑</p>
-        </div>
+      {/* How It Works Section */}
+      <Box sx={{ textAlign: 'center', mb: 8 }}>
+        <Typography variant="h4" gutterBottom fontWeight="bold">
+          How It Works
+        </Typography>
+        <Typography variant="body1" color="text.secondary" paragraph>
+          Three simple steps to your custom circuit
+        </Typography>
+      </Box>
 
-        <div style={{ border: '1px solid #eaeaea', borderRadius: '8px', padding: '2rem', width: '300px', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' }}>
-          <h3 style={{ marginTop: 0 }}>PCB布局设计</h3>
-          <p style={{ color: '#666' }}>智能生成PCB布局，优化电路性能和可靠性</p>
-        </div>
-      </div>
+      <Grid container spacing={3} sx={{ mb: 12 }}>
+        {[
+          { step: '1', title: 'Describe', desc: 'Type your circuit requirements in plain English' },
+          { step: '2', title: 'Generate', desc: 'AI creates schematic, simulation, PCB, and BOM' },
+          { step: '3', title: 'Download', desc: 'Export your design files for manufacturing' }
+        ].map((item) => (
+          <Grid item xs={12} md={4} key={item.step}>
+            <Box
+              sx={{
+                textAlign: 'center',
+                p: 3,
+                bgcolor: 'background.paper',
+                borderRadius: 2,
+                boxShadow: 1
+              }}
+            >
+              <Box
+                sx={{
+                  width: 60,
+                  height: 60,
+                  borderRadius: '50%',
+                  bgcolor: 'primary.main',
+                  color: 'white',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mx: 'auto',
+                  mb: 2,
+                  fontSize: '1.5rem',
+                  fontWeight: 'bold'
+                }}
+              >
+                {item.step}
+              </Box>
+              <Typography variant="h6" gutterBottom fontWeight="bold">
+                {item.title}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {item.desc}
+              </Typography>
+            </Box>
+          </Grid>
+        ))}
+      </Grid>
 
-      <button style={{ backgroundColor: '#0070f3', color: 'white', border: 'none', padding: '1rem 2rem', fontSize: '1rem', borderRadius: '4px', cursor: 'pointer' }}>
-        开始设计
-      </button>
-    </div>
-  )
+      {/* CTA Section */}
+      <Box
+        sx={{
+          bgcolor: 'primary.main',
+          color: 'white',
+          borderRadius: 4,
+          p: 6,
+          textAlign: 'center',
+          mb: 8
+        }}
+      >
+        <Typography variant="h4" gutterBottom fontWeight="bold">
+          Ready to Create Your Circuit?
+        </Typography>
+        <Typography variant="body1" paragraph sx={{ mb: 4, opacity: 0.9 }}>
+          Join thousands of engineers and hobbyists using AI to accelerate their designs
+        </Typography>
+        <Button
+          variant="contained"
+          size="large"
+          endIcon={<ArrowIcon />}
+          onClick={() => router.push('/design')}
+          sx={{
+            bgcolor: 'white',
+            color: 'primary.main',
+            px: 4,
+            py: 1.5,
+            fontSize: '1.1rem',
+            textTransform: 'none',
+            borderRadius: 2,
+            '&:hover': {
+              bgcolor: 'grey.100'
+            }
+          }}
+        >
+          Get Started Free
+        </Button>
+      </Box>
+    </Container>
+  );
 }

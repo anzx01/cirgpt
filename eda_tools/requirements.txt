@@ -1,0 +1,37 @@
+# FastAPI and server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# EDA Tools
+skidl==2.2.1
+pyspice==1.5
+
+# KiCad integration (requires KiCad to be installed)
+# Python bindings for KiCad - NOT installed via pip
+# pcbnew comes from KiCad installation
+# Uncomment the line below if you have KiCad installed with Python bindings
+# pcbnew  # This comes from KiCad installation
+
+# Circuit processing
+numpy==1.26.3
+scipy==1.11.4
+matplotlib==3.8.2
+
+# File processing
+Pillow==10.2.0
+
+# BOM generation
+pandas==2.1.4
+openpyxl==3.1.2
+
+# Utilities
+python-dotenv==1.0.0
+pydantic>=2.10.0
+httpx==0.26.0
+
+# SVG generation for schematics
+svgwrite==1.4.3
+
+# Note: KiCad must be installed separately on the system
+# Windows: https://www.kicad.org/download/
+# Python bindings are included with KiCad installation
