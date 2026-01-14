@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.schemas.eda import NetlistRequest, NetlistResponse, SchematicRequest, SchematicResponse
+from schemas.eda import NetlistRequest, NetlistResponse, SchematicRequest, SchematicResponse
 from app.services.eda import EDAService
 
 router = APIRouter()

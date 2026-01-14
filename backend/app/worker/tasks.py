@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.worker.celery_app import celery_app
 from models import CircuitDesign, SessionLocal
-from services.circuit_service import CircuitService
+from app.services.circuit_service import CircuitService
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-from app.schemas.eda import NetlistRequest, NetlistResponse, SchematicRequest, SchematicResponse
+from schemas.eda import NetlistRequest, NetlistResponse, SchematicRequest, SchematicResponse
 from app.utils.http_client import get_http_client
 from app.config import settings
 

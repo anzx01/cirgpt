@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from models import CircuitDesign, DesignHistory
 from schemas import CircuitDesignCreate, CircuitDesignUpdate
-from utils.http_client import http_client
-from websocket import notify_progress, notify_complete, notify_error
+from app.utils.http_client import http_client
+from app.websocket import notify_progress, notify_complete, notify_error
 
 logger = logging.getLogger(__name__)
 

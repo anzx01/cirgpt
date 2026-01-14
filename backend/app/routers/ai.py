@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.schemas.ai import AIRequest, AIResponse
+from schemas.ai import AIRequest, AIResponse
 from app.services.ai import AIService
 from app.utils.http_client import get_http_client
 

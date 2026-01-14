@@ -9,22 +9,23 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Try to import PySpice at module level
+try:
+    from PySpice.Spice.Netlist import Circuit
+    from PySpice.Unit import *
+    PYSPICE_AVAILABLE = True
+    logger.info("✓ PySpice library loaded successfully")
+except ImportError:
+    PYSPICE_AVAILABLE = False
+    logger.warning("✗ PySpice library not found. Will use mock simulation results")
+
 
 class CircuitSimulator:
     """Simulate circuits using PySpice"""
 
     def __init__(self):
         """Initialize circuit simulator"""
-        try:
-            from PySpice.Spice.Netlist import Circuit
-            from PySpice.Unit import *
-            self.Circuit = Circuit
-            self.Unit = __import__('PySpice.Unit', fromlist=['*'])
-            logger.info("✓ PySpice library loaded successfully")
-        except ImportError:
-            logger.error("✗ PySpice library not found. Install with: pip install pyspice")
-            logger.warning("Will use mock simulation results")
-            self.Circuit = None
+        self.Circuit = Circuit if PYSPICE_AVAILABLE else None
 
     def simulate_circuit(self, netlist: str) -> Dict[str, Any]:
         """

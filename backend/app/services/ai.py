@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-from app.schemas.ai import AIRequest, AIResponse
+from schemas.ai import AIRequest, AIResponse
 from app.utils.http_client import get_http_client
 from app.config import settings
 

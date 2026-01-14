@@ -42,9 +42,9 @@ class CircuitDesignResponse(BaseModel):
     pcb_image: Optional[str] = None
     bom: Optional[List[Dict[str, Any]]] = None
     estimated_cost: Optional[float] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
 
     class Config:

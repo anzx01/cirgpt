@@ -12,7 +12,15 @@
       "Bash(\"D:\\Python\\Python310\\python.exe\":*)",
       "Bash(/d/Python/Python310/python.exe:*)",
       "Bash(./venv/Scripts/python.exe:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(start \"Backend API\" cmd /k \"cd backend && venv\\Scripts\\activate && python -m uvicorn app.main:app --reload --port 8000\")",
+      "Bash(timeout:*)",
+      "Bash(nul:*)",
+      "Bash(start:*)",
+      "Bash(curl:*)",
+      "Bash(./venv/Scripts/pip.exe install:*)",
+      "Bash(taskkill:*)",
+      "Bash(./venv/Scripts/pip.exe show:*)"
     ],
     "deny": [],
     "ask": []

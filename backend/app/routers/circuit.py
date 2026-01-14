@@ -7,12 +7,12 @@ from typing import List
 import logging
 
 from schemas import CircuitDesignCreate, CircuitDesignUpdate, CircuitDesignResponse, DesignStatus
-from services.circuit_service import CircuitService
-from utils.database import get_db
+from app.services.circuit_service import CircuitService
+from app.utils.database import get_db
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/circuit", tags=["circuit"])
+router = APIRouter(tags=["circuit"])
 
 
 def get_circuit_service(db: Session = Depends(get_db)) -> CircuitService:
