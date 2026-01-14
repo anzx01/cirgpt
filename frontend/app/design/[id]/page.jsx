@@ -20,9 +20,10 @@ import {
   Description as DescriptionIcon,
   ShowChart as SimulationIcon,
   ViewInAr as PcbIcon,
-  Checklist as BomIcon
+  Checklist as BomIcon,
+  Home as HomeIcon
 } from '@mui/icons-material';
-import { io } from 'socket.io-client';
+// import { io } from 'socket.io-client'; // Temporarily disabled
 import SchematicViewer from '../../../components/SchematicViewer';
 import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
@@ -51,93 +52,75 @@ export default function DesignResultPage() {
     status: 'pending'
   });
 
-  // Socket.io connection
+  // Fetch design data - unified polling logic
   useEffect(() => {
-    const socket = io('http://localhost:8000', {
-      transports: ['websocket', 'polling']
-    });
+    const fetchDesign = async () => {
+      try {
+        const response = await fetch(`http://localhost:8000/api/circuit/${designId}/`);
 
-    socket.on('connect', () => {
-      console.log('Connected to server');
-      socket.emit('subscribe', { design_id: parseInt(designId) });
-    });
+        if (!response.ok) {
+          throw new Error('Failed to fetch design');
+        }
 
-    socket.on('design_progress', (data) => {
-      if (data.design_id === parseInt(designId)) {
-        setProgress({
-          message: data.message,
-          progress: data.progress,
-          status: 'processing'
-        });
+        const data = await response.json();
+        setDesign(data);
+
+        // Update progress based on status
+        if (data.status === 'completed') {
+          setProgress({
+            message: 'Design generation complete!',
+            progress: 100,
+            status: 'completed'
+          });
+          setLoading(false);
+          return true; // Signal to stop polling
+        } else if (data.status === 'failed') {
+          setProgress({
+            message: `Error: ${data.error_message || 'Generation failed'}`,
+            progress: 0,
+            status: 'failed'
+          });
+          setError(data.error_message);
+          setLoading(false);
+          return true; // Signal to stop polling
+        } else if (data.status === 'processing') {
+          setProgress({
+            message: 'Processing...',
+            progress: 50,
+            status: 'processing'
+          });
+          return false; // Continue polling
+        } else if (data.status === 'pending') {
+          setProgress({
+            message: 'Waiting to start...',
+            progress: 10,
+            status: 'pending'
+          });
+          return false; // Continue polling
+        }
+        return false; // Continue polling for unknown states
+      } catch (err) {
+        console.error('Fetch error:', err);
+        setError(err.message);
+        setLoading(false);
+        return true; // Stop polling on error
       }
-    });
+    };
 
-    socket.on('design_complete', (data) => {
-      if (data.design_id === parseInt(designId)) {
-        setProgress({
-          message: 'Design generation complete!',
-          progress: 100,
-          status: 'completed'
-        });
-        // Reload design data
-        fetchDesign();
-      }
-    });
+    // Initial fetch
+    fetchDesign();
 
-    socket.on('design_error', (data) => {
-      if (data.design_id === parseInt(designId)) {
-        setProgress({
-          message: `Error: ${data.message}`,
-          progress: 0,
-          status: 'failed'
-        });
-        setError(data.message);
+    // Set up polling for non-completed states
+    const pollInterval = setInterval(async () => {
+      const shouldStop = await fetchDesign();
+      if (shouldStop) {
+        clearInterval(pollInterval);
       }
-    });
+    }, 2000); // Poll every 2 seconds
 
     return () => {
-      socket.emit('unsubscribe', { design_id: parseInt(designId) });
-      socket.disconnect();
+      clearInterval(pollInterval);
     };
-  }, [designId]);
-
-  // Fetch design data
-  const fetchDesign = async () => {
-    try {
-      const response = await fetch(`http://localhost:8000/api/circuit/${designId}`);
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch design');
-      }
-
-      const data = await response.json();
-      setDesign(data);
-      setLoading(false);
-
-      // Update progress based on status
-      if (data.status === 'completed') {
-        setProgress({
-          message: 'Design generation complete!',
-          progress: 100,
-          status: 'completed'
-        });
-      } else if (data.status === 'failed') {
-        setProgress({
-          message: `Error: ${data.error_message || 'Generation failed'}`,
-          progress: 0,
-          status: 'failed'
-        });
-        setError(data.error_message);
-      }
-
-    } catch (err) {
-      setError(err.message);
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchDesign();
   }, [designId]);
 
   const handleTabChange = (event, newValue) => {
@@ -175,12 +158,24 @@ export default function DesignResultPage() {
     <Container maxWidth="xl" sx={{ py: 4 }}>
       {/* Header */}
       <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
-        <Typography variant="h4" fontWeight="bold" gutterBottom>
-          Circuit Design #{designId}
-        </Typography>
-        <Typography variant="body1" color="text.secondary" paragraph>
-          {design?.description}
-        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h4" fontWeight="bold" gutterBottom>
+              Circuit Design #{designId}
+            </Typography>
+            <Typography variant="body1" color="text.secondary" paragraph>
+              {design?.description}
+            </Typography>
+          </Box>
+          <Button
+            variant="outlined"
+            startIcon={<HomeIcon />}
+            onClick={() => router.push('/')}
+            sx={{ ml: 2 }}
+          >
+            Back to Home
+          </Button>
+        </Box>
 
         {isProcessing && (
           <Box sx={{ mt: 2 }}>
@@ -255,13 +250,22 @@ export default function DesignResultPage() {
       </Paper>
 
       {/* Actions */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-        <Button
-          variant="outlined"
-          onClick={() => router.push('/design')}
-        >
-          Create New Design
-        </Button>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'flex', gap: 2 }}>
+          <Button
+            variant="outlined"
+            startIcon={<HomeIcon />}
+            onClick={() => router.push('/')}
+          >
+            Back to Home
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => router.push('/design')}
+          >
+            Create New Design
+          </Button>
+        </Box>
         {!isProcessing && (
           <Chip
             label={`Estimated Cost: $${design?.estimated_cost?.toFixed(2) || '0.00'}`}

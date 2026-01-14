@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from models import CircuitDesign, DesignHistory
 from schemas import CircuitDesignCreate, CircuitDesignUpdate
-from app.utils.http_client import http_client
+from app.utils.http_client import get_http_client
 from app.websocket import notify_progress, notify_complete, notify_error
 
 logger = logging.getLogger(__name__)
@@ -227,6 +227,7 @@ class CircuitService:
         """
         logger.info("Parsing description with AI service")
 
+        http_client = get_http_client()
         response = await http_client.post(
             f"{self.ai_service_url}/ai/parse",
             json={"description": description}
@@ -250,6 +251,7 @@ class CircuitService:
         """
         logger.info("Generating netlist with AI service")
 
+        http_client = get_http_client()
         response = await http_client.post(
             f"{self.ai_service_url}/ai/generate",
             json={"requirements": requirements}
@@ -273,6 +275,7 @@ class CircuitService:
         """
         logger.info("Generating schematic with EDA service")
 
+        http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/schematic",
             json={"netlist": netlist}
@@ -295,6 +298,7 @@ class CircuitService:
         """
         logger.info("Simulating circuit with EDA service")
 
+        http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/simulation",
             json={"netlist": netlist}
@@ -317,6 +321,7 @@ class CircuitService:
         """
         logger.info("Generating PCB with EDA service")
 
+        http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/pcb",
             json={"netlist": netlist}
@@ -340,6 +345,7 @@ class CircuitService:
         """
         logger.info("Generating BOM with EDA service")
 
+        http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/bom",
             json={"netlist": netlist, "design_name": design_name}

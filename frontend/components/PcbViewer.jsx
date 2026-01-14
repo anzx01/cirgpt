@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Paper,
@@ -12,7 +12,8 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Grid
 } from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
@@ -22,6 +23,16 @@ import DownloadIcon from '@mui/icons-material/Download';
 export default function PcbViewer({ layout, image }) {
   const [zoom, setZoom] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
+  const [imageError, setImageError] = useState(false);
+
+  // Debug: log the image prop
+  useEffect(() => {
+    if (image) {
+      console.log('PCB Image data type:', typeof image);
+      console.log('PCB Image length:', image?.length);
+      console.log('PCB Image prefix:', image?.substring(0, 50));
+    }
+  }, [image]);
 
   if (!layout && !image) {
     return (
@@ -44,23 +55,69 @@ export default function PcbViewer({ layout, image }) {
   const handleDownload = () => {
     if (!image) return;
 
-    // Convert base64 to blob
-    const byteCharacters = atob(image);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: 'image/png' });
+    try {
+      let blob, filename;
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'pcb-layout.png';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+      // Check if it's SVG
+      if (image.trim().startsWith('<svg') || image.includes('<svg')) {
+        // Extract SVG content if wrapped in data URL
+        let svgContent = image;
+        if (image.startsWith('data:image/svg+xml,')) {
+          svgContent = decodeURIComponent(image.split(',')[1]);
+        } else if (image.startsWith('data:image')) {
+          svgContent = image.split(',')[1];
+        }
+
+        blob = new Blob([svgContent], { type: 'image/svg+xml' });
+        filename = 'pcb-layout.svg';
+      } else {
+        // Handle PNG/base64
+        let base64Data = image;
+        if (image.startsWith('data:image')) {
+          base64Data = image.split(',')[1];
+        }
+
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        blob = new Blob([byteArray], { type: 'image/png' });
+        filename = 'pcb-layout.png';
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Download failed:', error);
+      alert('Failed to download PCB layout image');
+    }
+  };
+
+  // Handle different image formats (SVG, base64 PNG, data URLs)
+  const getImageSrc = (imgData) => {
+    if (!imgData) return '';
+
+    // If already a data URL, use as-is
+    if (imgData.startsWith('data:image')) {
+      return imgData;
+    }
+
+    // Check if it's an SVG string
+    if (imgData.trim().startsWith('<svg')) {
+      // SVG needs to be URI-encoded and use svg+xml MIME type
+      return `data:image/svg+xml,${encodeURIComponent(imgData)}`;
+    }
+
+    // Otherwise, assume it's base64 PNG
+    return `data:image/png;base64,${imgData}`;
   };
 
   const pcbImage = (
@@ -76,16 +133,35 @@ export default function PcbViewer({ layout, image }) {
       }}
     >
       {image ? (
-        <img
-          src={`data:image/png;base64,${image}`}
-          alt="PCB Layout"
-          style={{
-            maxWidth: '100%',
-            maxHeight: fullscreen ? '100%' : '580px',
-            transform: `scale(${zoom})`,
-            transition: 'transform 0.3s ease'
-          }}
-        />
+        <>
+          <img
+            src={getImageSrc(image)}
+            alt="PCB Layout"
+            onError={(e) => {
+              console.error('Image failed to load');
+              console.error('Image src:', getImageSrc(image)?.substring(0, 100));
+              setImageError(true);
+              e.target.style.display = 'none';
+            }}
+            style={{
+              maxWidth: '100%',
+              maxHeight: fullscreen ? '100%' : '580px',
+              transform: `scale(${zoom})`,
+              transition: 'transform 0.3s ease',
+              display: imageError ? 'none' : 'block'
+            }}
+          />
+          {imageError && (
+            <Box sx={{ color: 'white', p: 4, textAlign: 'center' }}>
+              <Alert severity="error" sx={{ mb: 2 }}>
+                Failed to load PCB layout image
+              </Alert>
+              <Typography variant="body2" sx={{ color: 'white' }}>
+                Check browser console for details
+              </Typography>
+            </Box>
+          )}
+        </>
       ) : (
         <Box sx={{ color: 'white', p: 4 }}>
           <Typography variant="h6">PCB Layout Visualization</Typography>

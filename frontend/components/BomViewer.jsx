@@ -184,15 +184,6 @@ export default function BomViewer({ bom }) {
             Cost Breakdown by Component Type
           </Typography>
           <Grid container spacing={1}>
-            {entries.reduce((acc, entry) => {
-              const type = entry.component_type;
-              if (!acc[type]) {
-                acc[type] = { count: 0, cost: 0 };
-              }
-              acc[type].count += entry.quantity;
-              acc[type].cost += entry.total_price;
-              return acc;
-            }, {})}
             {Object.entries(
               entries.reduce((acc, entry) => {
                 const type = entry.component_type;

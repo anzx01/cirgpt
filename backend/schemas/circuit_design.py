@@ -21,7 +21,7 @@ class CircuitDesignUpdate(BaseModel):
     pcb_layout: Optional[Dict[str, Any]] = None
     pcb_gerber_files: Optional[Dict[str, str]] = None
     pcb_image: Optional[str] = None
-    bom: Optional[List[Dict[str, Any]]] = None
+    bom: Optional[Dict[str, Any]] = None
     estimated_cost: Optional[float] = None
     error_message: Optional[str] = None
 
@@ -40,7 +40,7 @@ class CircuitDesignResponse(BaseModel):
     pcb_layout: Optional[Dict[str, Any]] = None
     pcb_gerber_files: Optional[Dict[str, str]] = None
     pcb_image: Optional[str] = None
-    bom: Optional[List[Dict[str, Any]]] = None
+    bom: Optional[Dict[str, Any]] = None
     estimated_cost: Optional[float] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
