@@ -7,8 +7,8 @@ from app.config import settings
 # Create Celery app
 celery_app = Celery(
     "circuit_design_worker",
-    broker=settings.redis_url,
-    backend=settings.redis_url,
+    broker=settings.REDIS_URL,
+    backend=settings.REDIS_URL,
     include=["app.worker.tasks"]
 )
 

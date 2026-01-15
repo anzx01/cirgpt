@@ -1,6 +1,7 @@
 """
-SKiDL integration module
+SKiDL integration module (deprecated - using new SPICE parser + SVG generator)
 """
-from skidl.schematic_generator import SchematicGenerator, generate_schematic
+# Old imports disabled to prevent import errors
+# from skidl.schematic_generator import SchematicGenerator, generate_schematic
 
-__all__ = ["SchematicGenerator", "generate_schematic"]
+# __all__ = ["SchematicGenerator", "generate_schematic"]

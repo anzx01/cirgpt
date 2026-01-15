@@ -1,0 +1,546 @@
+{
+  "exportVersion": 1,
+  "design": {
+    "title": "555 Timer LED Blinker",
+    "date": "",
+    "tool": "CirGPT",
+    "sheet": 1
+  },
+  "components": [
+    {
+      "ref": "V1",
+      "val": "DC 9",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "VCC"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib": "Misc"
+    },
+    {
+      "ref": "R1",
+      "val": "1k",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "VCC"
+        },
+        {
+          "num": "2",
+          "net": "net_7"
+        }
+      ],
+      "lib": "Device"
+    },
+    {
+      "ref": "R2",
+      "val": "71.5k",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_7"
+        },
+        {
+          "num": "2",
+          "net": "net_6"
+        }
+      ],
+      "lib": "Device"
+    },
+    {
+      "ref": "C1",
+      "val": "10u",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_6"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib": "Device"
+    },
+    {
+      "ref": "C2",
+      "val": "10n",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_5"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib": "Device"
+    },
+    {
+      "ref": "R3",
+      "val": "220",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_3"
+        },
+        {
+          "num": "2",
+          "net": "net_700"
+        }
+      ],
+      "lib": "Device"
+    },
+    {
+      "ref": "D1",
+      "val": "LED",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_700"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib": "Device"
+    },
+    {
+      "ref": "UU1",
+      "val": "NE555",
+      "footprint": "",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_1"
+        },
+        {
+          "num": "2",
+          "net": "net_2"
+        },
+        {
+          "num": "3",
+          "net": "net_3"
+        },
+        {
+          "num": "4",
+          "net": "net_4"
+        },
+        {
+          "num": "5",
+          "net": "net_8"
+        },
+        {
+          "num": "6",
+          "net": "net_7"
+        },
+        {
+          "num": "7",
+          "net": "net_6"
+        },
+        {
+          "num": "8",
+          "net": "net_5"
+        }
+      ],
+      "lib": "Timer"
+    }
+  ],
+  "modules": {
+    "V1": {
+      "reference": "V1",
+      "value": "DC 9",
+      "footprint": "",
+      "lib_id": "Misc:DC 9",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "VCC"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib_source": {
+        "lib": "Misc",
+        "part": "DC 9"
+      }
+    },
+    "R1": {
+      "reference": "R1",
+      "value": "1k",
+      "footprint": "",
+      "lib_id": "Device:1k",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "VCC"
+        },
+        {
+          "num": "2",
+          "net": "net_7"
+        }
+      ],
+      "lib_source": {
+        "lib": "Device",
+        "part": "1k"
+      }
+    },
+    "R2": {
+      "reference": "R2",
+      "value": "71.5k",
+      "footprint": "",
+      "lib_id": "Device:71.5k",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_7"
+        },
+        {
+          "num": "2",
+          "net": "net_6"
+        }
+      ],
+      "lib_source": {
+        "lib": "Device",
+        "part": "71.5k"
+      }
+    },
+    "C1": {
+      "reference": "C1",
+      "value": "10u",
+      "footprint": "",
+      "lib_id": "Device:10u",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_6"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib_source": {
+        "lib": "Device",
+        "part": "10u"
+      }
+    },
+    "C2": {
+      "reference": "C2",
+      "value": "10n",
+      "footprint": "",
+      "lib_id": "Device:10n",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_5"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib_source": {
+        "lib": "Device",
+        "part": "10n"
+      }
+    },
+    "R3": {
+      "reference": "R3",
+      "value": "220",
+      "footprint": "",
+      "lib_id": "Device:220",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_3"
+        },
+        {
+          "num": "2",
+          "net": "net_700"
+        }
+      ],
+      "lib_source": {
+        "lib": "Device",
+        "part": "220"
+      }
+    },
+    "D1": {
+      "reference": "D1",
+      "value": "LED",
+      "footprint": "",
+      "lib_id": "Device:LED",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_700"
+        },
+        {
+          "num": "2",
+          "net": "GND"
+        }
+      ],
+      "lib_source": {
+        "lib": "Device",
+        "part": "LED"
+      }
+    },
+    "UU1": {
+      "reference": "UU1",
+      "value": "NE555",
+      "footprint": "",
+      "lib_id": "Timer:NE555",
+      "properties": {
+        "Sheetname": "",
+        "Sheetfile": ""
+      },
+      "fields": [],
+      "pins": [
+        {
+          "num": "1",
+          "net": "net_1"
+        },
+        {
+          "num": "2",
+          "net": "net_2"
+        },
+        {
+          "num": "3",
+          "net": "net_3"
+        },
+        {
+          "num": "4",
+          "net": "net_4"
+        },
+        {
+          "num": "5",
+          "net": "net_8"
+        },
+        {
+          "num": "6",
+          "net": "net_7"
+        },
+        {
+          "num": "7",
+          "net": "net_6"
+        },
+        {
+          "num": "8",
+          "net": "net_5"
+        }
+      ],
+      "lib_source": {
+        "lib": "Timer",
+        "part": "NE555"
+      }
+    }
+  },
+  "nets": [
+    {
+      "code": 0,
+      "name": "GND",
+      "nodes": [
+        {
+          "ref": "V1",
+          "pin": "2"
+        },
+        {
+          "ref": "C1",
+          "pin": "2"
+        },
+        {
+          "ref": "C2",
+          "pin": "2"
+        },
+        {
+          "ref": "D1",
+          "pin": "2"
+        }
+      ]
+    },
+    {
+      "code": 1,
+      "name": "VCC",
+      "nodes": [
+        {
+          "ref": "V1",
+          "pin": "1"
+        },
+        {
+          "ref": "R1",
+          "pin": "1"
+        }
+      ]
+    },
+    {
+      "code": 2,
+      "name": "net_7",
+      "nodes": [
+        {
+          "ref": "R1",
+          "pin": "2"
+        },
+        {
+          "ref": "R2",
+          "pin": "1"
+        },
+        {
+          "ref": "XU1",
+          "pin": "6"
+        }
+      ]
+    },
+    {
+      "code": 3,
+      "name": "net_6",
+      "nodes": [
+        {
+          "ref": "R2",
+          "pin": "2"
+        },
+        {
+          "ref": "C1",
+          "pin": "1"
+        },
+        {
+          "ref": "XU1",
+          "pin": "7"
+        }
+      ]
+    },
+    {
+      "code": 4,
+      "name": "net_5",
+      "nodes": [
+        {
+          "ref": "C2",
+          "pin": "1"
+        },
+        {
+          "ref": "XU1",
+          "pin": "8"
+        }
+      ]
+    },
+    {
+      "code": 5,
+      "name": "net_3",
+      "nodes": [
+        {
+          "ref": "R3",
+          "pin": "1"
+        },
+        {
+          "ref": "XU1",
+          "pin": "3"
+        }
+      ]
+    },
+    {
+      "code": 6,
+      "name": "net_700",
+      "nodes": [
+        {
+          "ref": "R3",
+          "pin": "2"
+        },
+        {
+          "ref": "D1",
+          "pin": "1"
+        }
+      ]
+    }
+  ],
+  "libraries": []
+}

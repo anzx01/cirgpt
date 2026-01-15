@@ -5,11 +5,17 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any
 import logging
+import sys
+import os
 
-from skidl.schematic_generator import generate_schematic
-from pyspice.simulator import simulate_circuit
-from kicad.pcb_generator import generate_pcb
-from bom.bom_generator import generate_bom
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from spice_parser import SPICEParser
+from svg_generator import SVGSchematicGenerator
+# from pyspice.simulator import simulate_circuit
+# from kicad.pcb_generator import generate_pcb
+# from bom.bom_generator import generate_bom
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +48,37 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
     """
     Generate circuit schematic from netlist
 
+    Uses industrial-grade SPICE parser and SVG generator with:
+    - Component-specific parsing strategies
+    - Force-directed graph layout for automatic component placement
+    - Pin-to-pin Manhattan routing for wires
+
     Args:
         request: Schematic generation request
 
     Returns:
-        Schematic data
+        Schematic data with SVG and summary
     """
     try:
-        logger.info("Generating schematic")
+        logger.info("Generating schematic with industrial-grade pipeline")
 
-        svg, summary = generate_schematic(request.netlist)
+        # Step 1: Parse SPICE netlist
+        parser = SPICEParser()
+        spice_data = parser.parse(request.netlist)
+        logger.info(f"Parsed {len(spice_data['components'])} components")
+
+        # Step 2: Generate SVG with automatic layout and routing
+        generator = SVGSchematicGenerator(spice_data)
+        svg = generator.generate()
+        logger.info(f"Generated SVG: {len(svg)} bytes")
+
+        # Create summary
+        summary = {
+            "title": spice_data.get('title', 'Circuit'),
+            "components": len(spice_data['components']),
+            "nets": len(spice_data['nets']),
+            "algorithm": "force-directed layout + Manhattan routing"
+        }
 
         return {
             "success": True,
@@ -61,6 +88,8 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
 
     except Exception as e:
         logger.error(f"Error generating schematic: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Failed to generate schematic: {str(e)}"

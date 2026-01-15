@@ -1,6 +1,5 @@
 """
-PySpice integration module
+PySpice integration module (imports disabled to prevent conflicts)
 """
-from pyspice.simulator import CircuitSimulator, simulate_circuit
-
-__all__ = ["CircuitSimulator", "simulate_circuit"]
+# from pyspice.simulator import CircuitSimulator, simulate_circuit
+# __all__ = ["CircuitSimulator", "simulate_circuit"]

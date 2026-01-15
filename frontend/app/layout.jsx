@@ -1,17 +1,32 @@
 import React from 'react'
+import { Box, Container, Typography } from '@mui/material'
+import NavigationBar from '../components/NavigationBar'
+import ThemeRegistry from '../components/ThemeRegistry'
 
 export default function RootLayout({
   children,
 }) {
   return (
     <html lang="zh-CN">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>AI Circuit Designer</title>
+      </head>
       <body>
-        <nav style={{ backgroundColor: '#0070f3', padding: '1rem', color: 'white' }}>
-          <h1 style={{ margin: 0 }}>AI 电路设计系统</h1>
-        </nav>
-        <main style={{ padding: '20px' }}>
-          {children}
-        </main>
+        <ThemeRegistry>
+          <NavigationBar />
+          <main>
+            {children}
+          </main>
+          <Box sx={{ bgcolor: 'primary.main', color: 'white', py: 3, mt: 4 }}>
+            <Container maxWidth="lg">
+              <Typography variant="body1" align="center">
+                © 2025 AI Circuit Designer. All rights reserved.
+              </Typography>
+            </Container>
+          </Box>
+        </ThemeRegistry>
       </body>
     </html>
   )

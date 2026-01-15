@@ -1,0 +1,56 @@
+<svg width="1000" height="650" xmlns="http://www.w3.org/2000/svg">
+<!-- 555 Timer Circuit Schematic -->
+<rect width="100%" height="100%" fill="white"/>
+<text x="500" y="30" text-anchor="middle" font-size="20" font-weight="bold">555 Timer LED Blinker Circuit</text>
+<rect x="350" y="230" width="100" height="140" fill="white" stroke="black" stroke-width="3"/>
+<line x1="340" y1="260" x2="350" y2="260" stroke="black" stroke-width="2"/>
+<text x="360" y="265" text-anchor="start" font-size="10">1</text>
+<line x1="340" y1="290" x2="350" y2="290" stroke="black" stroke-width="2"/>
+<text x="360" y="295" text-anchor="start" font-size="10">2</text>
+<line x1="340" y1="320" x2="350" y2="320" stroke="black" stroke-width="2"/>
+<text x="360" y="325" text-anchor="start" font-size="10">3</text>
+<line x1="340" y1="350" x2="350" y2="350" stroke="black" stroke-width="2"/>
+<text x="360" y="355" text-anchor="start" font-size="10">4</text>
+<line x1="450" y1="260" x2="460" y2="260" stroke="black" stroke-width="2"/>
+<text x="440" y="265" text-anchor="end" font-size="10">8</text>
+<line x1="450" y1="290" x2="460" y2="290" stroke="black" stroke-width="2"/>
+<text x="440" y="295" text-anchor="end" font-size="10">7</text>
+<line x1="450" y1="320" x2="460" y2="320" stroke="black" stroke-width="2"/>
+<text x="440" y="325" text-anchor="end" font-size="10">6</text>
+<line x1="450" y1="350" x2="460" y2="350" stroke="black" stroke-width="2"/>
+<text x="440" y="355" text-anchor="end" font-size="10">5</text>
+<text x="400" y="290" text-anchor="middle" font-size="14" font-weight="bold">NE555</text>
+<text x="400" y="310" text-anchor="middle" font-size="11">U1</text>
+<circle cx="150" cy="300" r="20" fill="white" stroke="brown" stroke-width="2"/>
+<text x="142" y="295" text-anchor="middle" font-size="16" font-weight="bold" fill="brown">+</text>
+<text x="142" y="312" text-anchor="middle" font-size="16" font-weight="bold" fill="brown">-</text>
+<line x1="130" y1="300" x2="120" y2="300" stroke="brown" stroke-width="2"/>
+<line x1="170" y1="300" x2="180" y2="300" stroke="brown" stroke-width="2"/>
+<text x="150" y="270" text-anchor="middle" font-size="11" font-weight="bold" fill="brown">V1</text>
+<text x="150" y="335" text-anchor="middle" font-size="10" fill="brown">9.0</text>
+<polyline points="250,200 260,190 270,210 280,190 290,210 300,190 310,200" fill="none" stroke="green" stroke-width="2"/>
+<line x1="240" y1="200" x2="250" y2="200" stroke="green" stroke-width="2"/>
+<line x1="310" y1="200" x2="320" y2="200" stroke="green" stroke-width="2"/>
+<text x="280" y="180" text-anchor="middle" font-size="11" font-weight="bold" fill="green">R1</text>
+<text x="280" y="225" text-anchor="middle" font-size="10" fill="green">1.0k</text>
+<polyline points="250,200 260,190 270,210 280,190 290,210 300,190 310,200" fill="none" stroke="green" stroke-width="2"/>
+<line x1="240" y1="200" x2="250" y2="200" stroke="green" stroke-width="2"/>
+<line x1="310" y1="200" x2="320" y2="200" stroke="green" stroke-width="2"/>
+<text x="280" y="180" text-anchor="middle" font-size="11" font-weight="bold" fill="green">R2</text>
+<text x="280" y="225" text-anchor="middle" font-size="10" fill="green">71.5k</text>
+<line x1="260" y1="385" x2="260" y2="415" stroke="blue" stroke-width="3"/>
+<line x1="300" y1="385" x2="300" y2="415" stroke="blue" stroke-width="3"/>
+<line x1="250" y1="400" x2="260" y2="400" stroke="blue" stroke-width="2"/>
+<line x1="300" y1="400" x2="310" y2="400" stroke="blue" stroke-width="2"/>
+<text x="280" y="375" text-anchor="middle" font-size="11" font-weight="bold" fill="blue">C1</text>
+<text x="280" y="430" text-anchor="middle" font-size="10" fill="blue">10.0u</text>
+<line x1="150" y1="280" x2="350" y2="200" stroke="black" stroke-width="2"/>
+<line x1="350" y1="200" x2="400" y2="200" stroke="black" stroke-width="2"/>
+<text x="300" y="190" text-anchor="middle" font-size="12" fill="red" font-weight="bold">VCC</text>
+<line x1="150" y1="320" x2="200" y2="400" stroke="black" stroke-width="2"/>
+<line x1="200" y1="400" x2="600" y2="400" stroke="black" stroke-width="2"/>
+<text x="400" y="420" text-anchor="middle" font-size="12" fill="blue" font-weight="bold">GND</text>
+<line x1="450" y1="300" x2="570" y2="300" stroke="black" stroke-width="2"/>
+<text x="510" y="290" text-anchor="middle" font-size="11" fill="green">OUTPUT</text>
+<text x="500" y="600" text-anchor="middle" font-size="14" fill="blue">Frequency: 1 Hz (adjust R1, R2, C1)</text>
+</svg>

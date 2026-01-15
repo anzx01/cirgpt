@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1309.5989279849205" height="1317.373871295068" viewBox="0 0 1309.5989279849205 1317.373871295068">
+<style>
+  .component { fill: none; stroke: #000; stroke-width: 2; }
+  .wire { fill: none; stroke: #00f; stroke-width: 2; }
+  .pin { fill: #000; }
+  .text { font-family: Arial, sans-serif; font-size: 12px; fill: #000; }
+  .value { font-family: Arial, sans-serif; font-size: 10px; fill: #666; }
+</style>
+
+<path class="wire" d="M 50.0 70.0 L 315.6 70.0 L 315.6 63.3 L 581.1 63.3" />
+<text class="value" x="55" y="65.0">VCC</text>
+<path class="wire" d="M 581.1 76.7 L 672.6 76.7 L 672.6 576.9 L 764.0 576.9 L 764.0 576.9 L 869.9 576.9 L 869.9 63.3 L 975.7 63.3" />
+<text class="value" x="586.1409605477859" y="71.66666666666667">7</text>
+<path class="wire" d="M 94.8 389.4 L 429.4 389.4 L 429.4 590.2 L 764.0 590.2 L 764.0 590.2 L 869.9 590.2 L 869.9 76.7 L 975.7 76.7" />
+<text class="value" x="99.81533352450197" y="384.4398594762089">6</text>
+<path class="wire" d="M 65.1 707.6 L 414.5 707.6 L 414.5 603.5 L 764.0 603.5" />
+<text class="value" x="70.06607885174473" y="702.5936750325684">5</text>
+<path class="wire" d="M 764.0 536.9 L 896.8 536.9 L 896.8 1090.7 L 1029.6 1090.7" />
+<text class="value" x="769.0097215456275" y="531.861546561053">3</text>
+<path class="wire" d="M 72.1 1045.6 L 550.9 1045.6 L 550.9 1104.0 L 1029.6 1104.0" />
+<text class="value" x="77.1354362960688" y="1040.5643411919789">700</text>
+<rect class="component" x="50.0" y="50.0" width="80.0" height="60.0" rx="5" />
+<text class="text" x="55" y="65">V1</text>
+<text class="value" x="55" y="105">DC 9</text>
+<circle class="pin" cx="50.0" cy="70.0" r="3" />
+<circle class="pin" cx="50.0" cy="90.0" r="3" />
+<rect class="component" x="581.1" y="50.0" width="80.0" height="40.0" rx="5" />
+<text class="text" x="586.1409605477859" y="65">R1</text>
+<text class="value" x="586.1409605477859" y="85">1k</text>
+<circle class="pin" cx="581.1" cy="63.3" r="3" />
+<circle class="pin" cx="581.1" cy="76.7" r="3" />
+<rect class="component" x="975.7" y="50.0" width="80.0" height="40.0" rx="5" />
+<text class="text" x="980.6913286745838" y="65">R2</text>
+<text class="value" x="980.6913286745838" y="85">71.5k</text>
+<circle class="pin" cx="975.7" cy="63.3" r="3" />
+<circle class="pin" cx="975.7" cy="76.7" r="3" />
+<rect class="component" x="94.8" y="376.1" width="60.0" height="40.0" rx="5" />
+<text class="text" x="99.81533352450197" y="391.10652614287557">C1</text>
+<text class="value" x="99.81533352450197" y="411.10652614287557">10u</text>
+<circle class="pin" cx="94.8" cy="389.4" r="3" />
+<circle class="pin" cx="94.8" cy="402.8" r="3" />
+<rect class="component" x="65.1" y="694.3" width="60.0" height="40.0" rx="5" />
+<text class="text" x="70.06607885174473" y="709.260341699235">C2</text>
+<text class="value" x="70.06607885174473" y="729.260341699235">10n</text>
+<circle class="pin" cx="65.1" cy="707.6" r="3" />
+<circle class="pin" cx="65.1" cy="720.9" r="3" />
+<rect class="component" x="1029.6" y="1077.4" width="80.0" height="40.0" rx="5" />
+<text class="text" x="1034.5989279849205" y="1092.373871295068">R3</text>
+<text class="value" x="1034.5989279849205" y="1112.373871295068">220</text>
+<circle class="pin" cx="1029.6" cy="1090.7" r="3" />
+<circle class="pin" cx="1029.6" cy="1104.0" r="3" />
+<rect class="component" x="72.1" y="1032.2" width="60.0" height="40.0" rx="5" />
+<text class="text" x="77.1354362960688" y="1047.2310078586456">D1</text>
+<text class="value" x="77.1354362960688" y="1067.2310078586456">LED</text>
+<circle class="pin" cx="72.1" cy="1045.6" r="3" />
+<circle class="pin" cx="72.1" cy="1058.9" r="3" />
+<rect class="component" x="764.0" y="496.9" width="120.0" height="120.0" rx="5" />
+<text class="text" x="769.0097215456275" y="511.86154656105305">XU1</text>
+<text class="value" x="769.0097215456275" y="611.861546561053">NE555</text>
+<circle class="pin" cx="764.0" cy="510.2" r="3" />
+<circle class="pin" cx="764.0" cy="523.5" r="3" />
+<circle class="pin" cx="764.0" cy="536.9" r="3" />
+<circle class="pin" cx="764.0" cy="550.2" r="3" />
+<circle class="pin" cx="764.0" cy="563.5" r="3" />
+<circle class="pin" cx="764.0" cy="576.9" r="3" />
+<circle class="pin" cx="764.0" cy="590.2" r="3" />
+<circle class="pin" cx="764.0" cy="603.5" r="3" />
+<line class="component" x1="50.0" y1="90.0" x2="50.0" y2="105.0" />
+<line class="component" x1="35.0" y1="105.0" x2="65.0" y2="105.0" />
+<line class="component" x1="41.0" y1="110.0" x2="59.0" y2="110.0" />
+<line class="component" x1="45.5" y1="115.0" x2="54.5" y2="115.0" />
+<line class="component" x1="94.8" y1="402.8" x2="94.8" y2="417.8" />
+<line class="component" x1="79.8" y1="417.8" x2="109.8" y2="417.8" />
+<line class="component" x1="85.8" y1="422.8" x2="103.8" y2="422.8" />
+<line class="component" x1="90.3" y1="427.8" x2="99.3" y2="427.8" />
+<line class="component" x1="65.1" y1="720.9" x2="65.1" y2="735.9" />
+<line class="component" x1="50.1" y1="735.9" x2="80.1" y2="735.9" />
+<line class="component" x1="56.1" y1="740.9" x2="74.1" y2="740.9" />
+<line class="component" x1="60.6" y1="745.9" x2="69.6" y2="745.9" />
+<line class="component" x1="72.1" y1="1058.9" x2="72.1" y2="1073.9" />
+<line class="component" x1="57.1" y1="1073.9" x2="87.1" y2="1073.9" />
+<line class="component" x1="63.1" y1="1078.9" x2="81.1" y2="1078.9" />
+<line class="component" x1="67.6" y1="1083.9" x2="76.6" y2="1083.9" />
+</svg>
