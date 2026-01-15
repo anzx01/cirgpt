@@ -50,7 +50,9 @@
       "Bash(where netlistsvg)",
       "Bash(ping:*)",
       "Bash(apppage.jsx)",
-      "Bash(md5sum:*)"
+      "Bash(md5sum:*)",
+      "Bash(del:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []
