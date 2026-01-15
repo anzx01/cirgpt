@@ -49,7 +49,8 @@
       "Bash(iconv:*)",
       "Bash(where netlistsvg)",
       "Bash(ping:*)",
-      "Bash(apppage.jsx)"
+      "Bash(apppage.jsx)",
+      "Bash(md5sum:*)"
     ],
     "deny": [],
     "ask": []
