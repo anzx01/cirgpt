@@ -201,9 +201,9 @@ async def list_eda_tools() -> Dict[str, Any]:
                     "status": "active"
                 },
                 {
-                    "name": "PySpice",
-                    "version": "1.5",
-                    "description": "Circuit simulation",
+                    "name": "ngspice",
+                    "version": "system",
+                    "description": "Circuit simulation via ngspice subprocess",
                     "status": "active"
                 },
                 {

@@ -3,6 +3,10 @@
 CircuitGPT is an AI-assisted circuit design prototype with a FastAPI backend,
 an AI service, EDA service integrations, and a Next.js frontend.
 
+> **Trademark notice**: "CircuitGPT" is the name of this open-source project.
+> It is not affiliated with, endorsed by, or sponsored by OpenAI.
+> "GPT" and "ChatGPT" are trademarks of OpenAI.
+
 ## Repository Hygiene
 
 Local environment files, generated data, model files, simulator bundles, and

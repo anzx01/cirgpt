@@ -4,7 +4,6 @@ uvicorn[standard]==0.27.0
 
 # EDA Tools
 skidl==2.2.1
-pyspice==1.5
 
 # KiCad integration (requires KiCad to be installed)
 # Python bindings for KiCad - NOT installed via pip

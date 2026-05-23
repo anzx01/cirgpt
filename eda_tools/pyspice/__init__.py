@@ -1,5 +1,6 @@
 """
-PySpice integration module (imports disabled to prevent conflicts)
+ngspice-based circuit simulation module (GPL-free).
 """
-# from pyspice.simulator import CircuitSimulator, simulate_circuit
-# __all__ = ["CircuitSimulator", "simulate_circuit"]
+from .simulator import CircuitSimulator, simulate_circuit
+
+__all__ = ["CircuitSimulator", "simulate_circuit"]

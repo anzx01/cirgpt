@@ -1,310 +1,205 @@
 """
-PySpice integration for circuit simulation
+ngspice subprocess wrapper for circuit simulation.
+Replaces the PySpice (GPLv3) dependency with a direct ngspice call.
+ngspice is distributed under BSD/ISC-compatible terms.
 """
 import logging
-import numpy as np
-from typing import Dict, List, Any
+import subprocess
 import tempfile
 import os
+import re
+import numpy as np
+from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Try to import PySpice at module level
-try:
-    from PySpice.Spice.Netlist import Circuit
-    from PySpice.Unit import *
-    PYSPICE_AVAILABLE = True
-    logger.info("✓ PySpice library loaded successfully")
-except ImportError:
-    PYSPICE_AVAILABLE = False
-    logger.warning("✗ PySpice library not found. Will use mock simulation results")
+_NGSPICE_CANDIDATES = ["ngspice", "ngspice-64", "ngspice64"]
+
+
+def _find_ngspice() -> Optional[str]:
+    """Return the first usable ngspice executable, or None."""
+    for candidate in _NGSPICE_CANDIDATES:
+        try:
+            subprocess.run(
+                [candidate, "--version"],
+                capture_output=True, timeout=5
+            )
+            return candidate
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+NGSPICE_BIN = _find_ngspice()
+if NGSPICE_BIN:
+    logger.info(f"ngspice found: {NGSPICE_BIN}")
+else:
+    logger.warning("ngspice not found in PATH. Simulation will use mock results.")
+
+
+def _parse_rawspice(raw_text: str) -> Dict[str, Any]:
+    """
+    Parse ngspice plain-text output (.print tran) into structured data.
+    Returns dict with keys: time, voltages, currents.
+    """
+    time_vals: List[float] = []
+    node_data: Dict[str, List[float]] = {}
+
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("*") or line.startswith("."):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            vals = [float(p) for p in parts]
+        except ValueError:
+            continue
+        if not time_vals or vals[0] >= time_vals[-1]:
+            time_vals.append(vals[0])
+            for i, v in enumerate(vals[1:], start=1):
+                key = f"node_{i}"
+                node_data.setdefault(key, []).append(v)
+
+    voltages = {k: v for k, v in node_data.items() if not k.startswith("i_")}
+    currents = {k[2:]: v for k, v in node_data.items() if k.startswith("i_")}
+    return {"time": time_vals, "voltages": voltages, "currents": currents}
 
 
 class CircuitSimulator:
-    """Simulate circuits using PySpice"""
-
-    def __init__(self):
-        """Initialize circuit simulator"""
-        self.Circuit = Circuit if PYSPICE_AVAILABLE else None
+    """Simulate circuits using ngspice subprocess."""
 
     def simulate_circuit(self, netlist: str) -> Dict[str, Any]:
         """
-        Simulate circuit from netlist
+        Simulate circuit from SPICE netlist string.
 
-        Args:
-            netlist: SPICE netlist
-
-        Returns:
-            Simulation results
+        Returns simulation results dict with keys:
+          status, time, voltages, currents, analysis_type, simulation_time, nodes.
         """
-        logger.info("Simulating circuit")
+        logger.info("Starting circuit simulation")
 
-        if self.Circuit is None:
-            logger.warning("PySpice not available, using mock results")
-            return self._generate_mock_results(netlist)
+        if NGSPICE_BIN is None:
+            logger.warning("ngspice unavailable, returning mock results")
+            return self._mock_results(netlist)
 
-        try:
-            # Create temporary file for netlist
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.cir', delete=False) as f:
-                f.write(netlist)
-                netlist_file = f.name
+        batch_netlist = self._ensure_print_command(netlist)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cir_path = os.path.join(tmpdir, "circuit.cir")
+            out_path = os.path.join(tmpdir, "output.txt")
+            with open(cir_path, "w") as f:
+                f.write(batch_netlist)
 
             try:
-                # Run simulation using PySpice
-                results = self._run_pyspice_simulation(netlist_file)
-                logger.info("✓ Circuit simulation completed")
-                return results
-            finally:
-                # Clean up temp file
-                if os.path.exists(netlist_file):
-                    os.unlink(netlist_file)
+                proc = subprocess.run(
+                    [NGSPICE_BIN, "-b", "-o", out_path, cir_path],
+                    capture_output=True, text=True, timeout=60
+                )
+                raw = ""
+                if os.path.exists(out_path):
+                    with open(out_path) as f:
+                        raw = f.read()
+                raw += proc.stdout
 
-        except Exception as e:
-            logger.error(f"Error simulating circuit: {e}")
-            return self._generate_mock_results(netlist, error=str(e))
+                parsed = _parse_rawspice(raw)
+                if not parsed["time"]:
+                    logger.warning("ngspice produced no data, falling back to mock")
+                    return self._mock_results(netlist, error=proc.stderr[:200] if proc.stderr else None)
 
-    def _run_pyspice_simulation(self, netlist_file: str) -> Dict[str, Any]:
-        """
-        Run PySpice simulation
+                result = {
+                    "status": "success",
+                    "time": parsed["time"],
+                    "voltages": parsed["voltages"],
+                    "currents": parsed["currents"],
+                    "analysis_type": "transient",
+                    "simulation_time": parsed["time"][-1] if parsed["time"] else 0,
+                    "nodes": list(parsed["voltages"].keys()),
+                }
+                logger.info(f"Simulation completed: {len(result['time'])} time points")
+                return result
 
-        Args:
-            netlist_file: Path to SPICE netlist file
+            except subprocess.TimeoutExpired:
+                logger.error("ngspice simulation timed out")
+                return self._mock_results(netlist, error="Simulation timed out")
+            except Exception as e:
+                logger.error(f"ngspice error: {e}")
+                return self._mock_results(netlist, error=str(e))
 
-        Returns:
-            Simulation results
-        """
-        logger.info(f"Running PySpice simulation with netlist: {netlist_file}")
+    def _ensure_print_command(self, netlist: str) -> str:
+        """Add .print tran if the netlist lacks output commands."""
+        lower = netlist.lower()
+        if ".print" not in lower and ".probe" not in lower:
+            lines = netlist.rstrip().splitlines()
+            end_idx = next(
+                (i for i, l in enumerate(lines) if l.strip().lower() == ".end"),
+                len(lines)
+            )
+            lines.insert(end_idx, ".print tran v(*)")
+            return "\n".join(lines)
+        return netlist
 
-        try:
-            # Read the netlist file
-            with open(netlist_file, 'r') as f:
-                netlist_content = f.read()
+    def _mock_results(self, netlist: str, error: Optional[str] = None) -> Dict[str, Any]:
+        """Generate deterministic mock results when ngspice is unavailable."""
+        time_points = np.linspace(0, 1, 100).tolist()
+        lower = netlist.lower()
 
-            # Parse and create circuit from netlist
-            circuit = self.Circuit(netlist_content)
-
-            # Create simulator
-            from PySpice.Spice.Netlist import Circuit as SpiceCircuit
-            from PySpice.Probe.WaveForm import WaveForm
-
-            # Run transient analysis
-            simulator = circuit.simulator(temperature=25, nominal_temperature=25)
-
-            # Check if there's a .tran command in the netlist
-            if '.tran' in netlist_content.lower():
-                # Extract simulation parameters from netlist
-                lines = netlist_content.split('\n')
-                for line in lines:
-                    if line.strip().lower().startswith('.tran'):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            try:
-                                step_time = float(parts[1].replace('s', '').replace('m', 'e-3').replace('u', 'e-6'))
-                                end_time = step_time * 1000  # Default duration
-                            except:
-                                step_time = 1e-3  # 1ms default
-                                end_time = 1.0  # 1 second default
-                            break
-                else:
-                    step_time = 1e-3
-                    end_time = 1.0
-            else:
-                step_time = 1e-3  # 1ms default
-                end_time = 1.0  # 1 second default
-
-            # Run transient analysis
-            analysis = simulator.transient(step_time=step_time, end_time=end_time)
-
-            # Extract results
-            time_points = []
-            voltages = {}
-            currents = {}
-
-            # Process analysis results
-            for node_name in analysis.nodes:
-                if node_name not in ['#branch', '0']:  # Skip ground and branches
-                    voltages[node_name] = analysis[node_name].as_ndarray()
-
-            # Extract time points
-            if len(analysis.time) > 0:
-                time_points = analysis.time.as_ndarray()
-
-            # Extract currents from voltage sources
-            for element in circuit.elements:
-                if hasattr(element, 'name'):
-                    branch_name = f"{element.name}#branch"
-                    if branch_name in analysis.internal_nodes:
-                        currents[element.name] = analysis[branch_name].as_ndarray()
-
-            logger.info(f"✓ PySpice simulation completed: {len(time_points)} time points")
-
-            # Prepare output
-            result = {
-                "status": "success",
-                "time": time_points.tolist() if len(time_points) > 0 else np.linspace(0, end_time, 1000).tolist(),
-                "voltages": {k: v.tolist() for k, v in voltages.items()},
-                "currents": {k: v.tolist() for k, v in currents.items()},
-                "analysis_type": "transient",
-                "simulation_time": end_time,
-                "nodes": list(voltages.keys())
-            }
-
-            # If no output nodes found, use default 'output'
-            if len(result["voltages"]) == 0:
-                result["voltages"]["output"] = np.zeros(len(time_points)).tolist()
-
-            return result
-
-        except Exception as e:
-            logger.error(f"PySpice simulation error: {e}")
-            # Fall back to mock results with error info
-            return self._generate_mock_results(netlist_content if 'netlist_content' in locals() else "", error=str(e))
-
-    def _generate_mock_results(self, netlist: str, error: str = None) -> Dict[str, Any]:
-        """
-        Generate mock simulation results
-
-        Args:
-            netlist: SPICE netlist (for analysis)
-            error: Optional error message
-
-        Returns:
-            Mock results
-        """
-        # Generate time-varying data
-        time_points = np.linspace(0, 1, 100)  # 100 points from 0 to 1 second
-
-        # Analyze netlist to determine circuit type
-        netlist_lower = netlist.lower()
-
-        if "555" in netlist_lower or "blinker" in netlist_lower:
-            # Square wave for 555 timer
-            voltage_waveform = []
-            for t in time_points:
-                period = 1.0  # 1 second period
-                if (t % period) < (period / 2):
-                    voltage_waveform.append(9.0)  # High
-                else:
-                    voltage_waveform.append(0.0)  # Low
-        elif "opamp" in netlist_lower or "amplifier" in netlist_lower:
-            # Amplified sine wave
-            voltage_waveform = (5 * np.sin(2 * np.pi * 1 * time_points)).tolist()
+        if "555" in lower or "blinker" in lower:
+            waveform = [9.0 if (t % 1.0) < 0.5 else 0.0 for t in time_points]
+        elif "opamp" in lower or "amplifier" in lower:
+            waveform = (5 * np.sin(2 * np.pi * np.array(time_points))).tolist()
         else:
-            # Simple sine wave
-            voltage_waveform = (3.3 * np.sin(2 * np.pi * 1 * time_points)).tolist()
+            waveform = (3.3 * np.sin(2 * np.pi * np.array(time_points))).tolist()
 
-        # Current waveform (smaller amplitude)
-        current_waveform = [v / 1000.0 for v in voltage_waveform]  # I = V / 1k
-
-        results = {
+        result: Dict[str, Any] = {
             "status": "success" if error is None else "failed",
-            "time": time_points.tolist(),
+            "time": time_points,
             "voltages": {
-                "output": voltage_waveform,
-                "input": [v * 0.3 for v in voltage_waveform]  # Smaller input
+                "output": waveform,
+                "input": [v * 0.3 for v in waveform],
             },
-            "currents": {
-                "total": current_waveform
-            },
+            "currents": {"total": [v / 1000.0 for v in waveform]},
             "analysis_type": "transient",
             "simulation_time": 0.2,
-            "node_voltages": {
-                "vcc": 9.0,
-                "gnd": 0.0
-            }
+            "nodes": ["output", "input"],
         }
-
         if error:
-            results["error"] = error
-            results["message"] = f"Simulation used mock data due to error: {error}"
-
-        return results
+            result["error"] = error
+            result["message"] = f"Mock data used due to error: {error}"
+        return result
 
     def analyze_operating_point(self, netlist: str) -> Dict[str, Any]:
-        """
-        Analyze DC operating point
-
-        Args:
-            netlist: SPICE netlist
-
-        Returns:
-            Operating point data
-        """
-        logger.info("Analyzing operating point")
-
-        # Parse netlist for operating point analysis
-        # For MVP, return mock data
-
+        """Analyze DC operating point (returns representative mock data)."""
         return {
-            "node_voltages": {
-                "1": 9.0,
-                "2": 4.5,
-                "3": 0.0
-            },
-            "device_currents": {
-                "V1": 0.01,
-                "R1": 0.005
-            },
-            "power_dissipation": 0.09  # Watts
+            "node_voltages": {"1": 9.0, "2": 4.5, "3": 0.0},
+            "device_currents": {"V1": 0.01, "R1": 0.005},
+            "power_dissipation": 0.09,
         }
 
     def generate_waveform_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate summary of waveform data
-
-        Args:
-            results: Simulation results
-
-        Returns:
-            Waveform summary
-        """
+        """Summarise voltage/current waveform statistics."""
         voltages = results.get("voltages", {}).get("output", [])
         currents = results.get("currents", {}).get("total", [])
-
         if not voltages:
             return {}
-
-        # Calculate statistics
-        v_max = max(voltages)
-        v_min = min(voltages)
+        v_max, v_min = max(voltages), min(voltages)
         v_avg = sum(voltages) / len(voltages)
-
-        i_max = max(currents) if currents else 0
-
-        # Estimate frequency (for periodic signals)
-        time_points = results.get("time", [])
-        frequency = 1.0  # Default 1 Hz
-
         return {
             "voltage": {
-                "max": v_max,
-                "min": v_min,
-                "avg": v_avg,
-                "peak_to_peak": v_max - v_min
+                "max": v_max, "min": v_min, "avg": v_avg,
+                "peak_to_peak": v_max - v_min,
             },
-            "current": {
-                "max": i_max
-            },
-            "estimated_frequency": frequency,
+            "current": {"max": max(currents) if currents else 0},
+            "estimated_frequency": 1.0,
             "power": {
                 "avg": v_avg * (sum(currents) / len(currents)) if currents else 0
-            }
+            },
         }
 
 
 def simulate_circuit(netlist: str) -> Dict[str, Any]:
-    """
-    Simulate circuit from netlist
-
-    Args:
-        netlist: SPICE netlist
-
-    Returns:
-        Simulation results
-    """
-    simulator = CircuitSimulator()
-    results = simulator.simulate_circuit(netlist)
-    summary = simulator.generate_waveform_summary(results)
-
-    results["summary"] = summary
+    """Simulate a SPICE netlist and return results with waveform summary."""
+    sim = CircuitSimulator()
+    results = sim.simulate_circuit(netlist)
+    results["summary"] = sim.generate_waveform_summary(results)
     return results
