@@ -22,7 +22,7 @@ export default function RootLayout({
           <Box sx={{ bgcolor: 'primary.main', color: 'white', py: 3, mt: 4 }}>
             <Container maxWidth="lg">
               <Typography variant="body1" align="center">
-                © 2025 AI Circuit Designer. All rights reserved.
+                © 2026 CircuitGPT contributors. Licensed under ISC.
               </Typography>
             </Container>
           </Box>

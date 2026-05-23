@@ -32,7 +32,7 @@
 2. **解压使用**
    ```cmd
    # 解压到项目目录
-   cd G:\myaist\cirgpt
+   cd <project-root>
    mkdir tools
    # 将ngspice解压到这里
 
@@ -50,7 +50,7 @@
 
 2. **放置DLL**
    ```
-   复制到：G:\myaist\cirgpt\eda_tools\venv\Lib\site-packages\PySpice\Spice\NgSpice\Spice64_dll\dll-vs\
+   复制到：<project-root>\eda_tools\venv\Lib\site-packages\PySpice\Spice\NgSpice\Spice64_dll\dll-vs\
    ```
 
 ## 方案4：继续使用Fallback模式（当前方式）
@@ -94,7 +94,7 @@ Message: Simulation used mock data due to error: cannot load library 'ngspice.dl
 
 测试当前配置：
 ```bash
-cd G:\myaist\cirgpt
+cd <project-root>
 python test_real_generation.py
 ```
 

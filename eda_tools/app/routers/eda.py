@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from spice_parser import SPICEParser
 from svg_generator import SVGSchematicGenerator
-# from pyspice.simulator import simulate_circuit
-# from kicad.pcb_generator import generate_pcb
-# from bom.bom_generator import generate_bom
+from pyspice.simulator import simulate_circuit
+from kicad.pcb_generator import generate_pcb
+from bom.bom_generator import generate_bom
 
 logger = logging.getLogger(__name__)
 

@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
@@ -16,7 +17,10 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # 安全配置
-    SECRET_KEY: str = "your-secret-key-here"
+    SECRET_KEY: str = Field(
+        ...,
+        description="JWT signing key. Set this in .env or deployment secrets.",
+    )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 

@@ -28,7 +28,7 @@ services:
     environment:
       - DB_URL=sqlite:///./app.db
       - REDIS_URL=redis://redis:6379
-      - SECRET_KEY=your-secret-key-here
+      - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in your local .env file}
       - ALGORITHM=HS256
       - ACCESS_TOKEN_EXPIRE_MINUTES=30
       - AI_SERVICE_URL=http://ai-service:8001

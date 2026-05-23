@@ -14,19 +14,24 @@ if exist "eda_tools\venv" rmdir /s /q "eda_tools\venv"
 echo   Removed old virtual environments.
 
 REM Create new virtual environments with Python 3.10
+set "PYTHON_EXE=py -3.10"
+%PYTHON_EXE% --version >nul 2>&1
+if errorlevel 1 (
+    set "PYTHON_EXE=python"
+)
 echo.
 echo [2/4] Creating Backend virtual environment...
-D:\Python\Python310\python.exe -m venv backend\venv
+%PYTHON_EXE% -m venv backend\venv
 echo   Created Backend venv.
 
 echo.
 echo [3/4] Creating AI Service virtual environment...
-D:\Python\Python310\python.exe -m venv ai_service\venv
+%PYTHON_EXE% -m venv ai_service\venv
 echo   Created AI Service venv.
 
 echo.
 echo [4/4] Creating EDA Tools virtual environment...
-D:\Python\Python310\python.exe -m venv eda_tools\venv
+%PYTHON_EXE% -m venv eda_tools\venv
 echo   Created EDA Tools venv.
 
 echo.

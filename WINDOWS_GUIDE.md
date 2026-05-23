@@ -1,7 +1,7 @@
 # 🚀 Windows 快速启动指南（你的系统配置）
 
 ## 📍 你的系统路径
-- **Python:** `C:\Python314\python.exe`
+- **Python:** `python`
 - **Node.js:** `C:\Program Files\nodejs\node.exe`
 
 ---
@@ -142,15 +142,15 @@ taskkill /PID <进程ID> /F
 ```powershell
 # 清除缓存，重新安装
 cd backend
-C:\Python314\python.exe -m pip install --upgrade pip
-C:\Python314\python.exe -m pip install -r requirements.txt --force-reinstall
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt --force-reinstall
 ```
 
 ### **问题 4：Python 路径错误**
 **现象：** 提示找不到 Python
 
 **解决：**
-确认 `C:\Python314\python.exe` 存在，如果路径不同，编辑 `INSTALL-FULL.bat` 和 `START-FULL.bat`，修改 `PYTHON_EXE` 变量
+确认 `python` 存在，如果路径不同，编辑 `INSTALL-FULL.bat` 和 `START-FULL.bat`，修改 `PYTHON_EXE` 变量
 
 ---
 
@@ -176,7 +176,7 @@ C:\Python314\python.exe -m pip install -r requirements.txt --force-reinstall
 ```powershell
 # 例如重启 Backend API
 cd backend
-C:\Python314\python.exe -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
 ### **查看 API 文档**
@@ -190,7 +190,7 @@ C:\Python314\python.exe -m uvicorn app.main:app --reload --port 8000
 
 ```powershell
 # PowerShell 窗口 1（主窗口）
-cd G:\myaist\cirgpt
+cd <project-root>
 .\INSTALL-FULL.bat          # 首次安装，只需运行一次
 
 # PowerShell 窗口 2（Redis）

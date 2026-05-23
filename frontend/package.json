@@ -1,5 +1,5 @@
 {
-  "name": "circuit-design-frontend",
+  "name": "cirgpt-frontend",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -23,7 +23,7 @@
   "description": "",
   "main": "next.config.js",
   "keywords": [],
-  "author": "",
+  "author": "CircuitGPT contributors",
   "license": "ISC",
   "type": "commonjs"
 }

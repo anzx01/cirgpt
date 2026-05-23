@@ -31,6 +31,13 @@ ENV/
 env/
 .venv
 
+# Local environment and tool configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+.claude/
+
 # PyCharm
 .idea/
 
@@ -85,11 +92,16 @@ dump.rdb
 *~
 
 # Model files
+models/
 *.pkl
 *.pth
 *.h5
 *.bin
 *.safetensors
+
+# Third-party simulator bundles and generated/local runtime data
+Spice64/
+storage/
 
 # Large files
 *.tar.gz
