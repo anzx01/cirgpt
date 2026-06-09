@@ -7,14 +7,12 @@ echo   AI Circuit Designer - Quick Start
 echo ========================================
 echo.
 
-REM Check if Python 3.11 is available
-py -3.11 --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: Python 3.11 not found in PATH
-    echo Please install Python 3.11 from https://www.python.org/
-    pause
-    exit /b 1
-)
+REM Check if project virtual environments are available.
+REM The services run from their own venvs, so we do not require py -3.11
+REM to be registered globally.
+set "BACKEND_PY=backend\venv\Scripts\python.exe"
+set "AI_PY=ai_service\venv\Scripts\python.exe"
+set "EDA_PY=eda_tools\venv\Scripts\python.exe"
 
 echo [1/7] Checking virtual environments...
 echo.
