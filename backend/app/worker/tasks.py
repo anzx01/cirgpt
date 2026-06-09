@@ -2,8 +2,8 @@
 Celery tasks for background processing
 """
 import logging
+import asyncio
 from datetime import datetime, timedelta
-from celery import shared_task
 from sqlalchemy.orm import Session
 
 from app.worker.celery_app import celery_app
@@ -13,7 +13,7 @@ from app.services.circuit_service import CircuitService
 logger = logging.getLogger(__name__)
 
 
-@shared_task(name="app.worker.tasks.generate_circuit_task")
+@celery_app.task(name="app.worker.tasks.generate_circuit_task")
 def generate_circuit_task(design_id: int):
     """
     Generate circuit design in background
@@ -28,7 +28,7 @@ def generate_circuit_task(design_id: int):
         service = CircuitService(db)
 
         # Create progress callback for Celery
-        def update_progress(design_id: int, message: str, progress: int, error: bool = False):
+        async def update_progress(design_id: int, message: str, progress: int, error: bool = False):
             """Update task progress"""
             logger.info(f"Design {design_id}: {message} ({progress}%)")
 
@@ -49,7 +49,7 @@ def generate_circuit_task(design_id: int):
                 )
 
         # Run generation
-        result = service.generate_circuit(design_id, progress_callback=update_progress)
+        result = asyncio.run(service.generate_circuit(design_id, progress_callback=update_progress))
 
         logger.info(f"✓ Background circuit generation complete for design {design_id}")
         return result
@@ -61,7 +61,7 @@ def generate_circuit_task(design_id: int):
         db.close()
 
 
-@shared_task(name="app.worker.tasks.cleanup_old_designs")
+@celery_app.task(name="app.worker.tasks.cleanup_old_designs")
 def cleanup_old_designs():
     """
     Cleanup old completed designs (older than 30 days)
@@ -96,7 +96,7 @@ def cleanup_old_designs():
         db.close()
 
 
-@shared_task(name="app.worker.tasks.update_design_progress")
+@celery_app.task(name="app.worker.tasks.update_design_progress")
 def update_design_progress(design_id: int, message: str, progress: int):
     """
     Update design progress (called from frontend polling)

@@ -9,7 +9,7 @@ app = FastAPI(title="Circuit Design API Gateway", version="1.0.0")
 # 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.CORS_ORIGINS_LIST,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,10 +21,15 @@ app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
 app.include_router(eda.router, prefix="/api/eda", tags=["eda"])
 app.include_router(circuit.router, prefix="/api/circuit", tags=["circuit"])
 
-# Mount Socket.io server
-from socketio import ASGIApp
-socket_app = ASGIApp(socket_manager.get_app())
-app.mount("/socket.io", socket_app)
+# Mount Socket.io server when the optional dependency is installed.
+try:
+    from socketio import ASGIApp
+except ImportError:
+    ASGIApp = None
+
+if ASGIApp is not None and socket_manager.get_app() is not None:
+    socket_app = ASGIApp(socket_manager.get_app())
+    app.mount("/socket.io", socket_app)
 
 @app.get("/")
 async def root():

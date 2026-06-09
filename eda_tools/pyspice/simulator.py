@@ -34,7 +34,7 @@ NGSPICE_BIN = _find_ngspice()
 if NGSPICE_BIN:
     logger.info(f"ngspice found: {NGSPICE_BIN}")
 else:
-    logger.warning("ngspice not found in PATH. Simulation will use mock results.")
+    logger.warning("ngspice not found in PATH. Simulation will use degraded analytical previews.")
 
 
 def _parse_rawspice(raw_text: str) -> Dict[str, Any]:
@@ -80,8 +80,8 @@ class CircuitSimulator:
         logger.info("Starting circuit simulation")
 
         if NGSPICE_BIN is None:
-            logger.warning("ngspice unavailable, returning mock results")
-            return self._mock_results(netlist)
+            logger.warning("ngspice unavailable, returning degraded analytical preview")
+            return self._degraded_results(netlist, "ngspice executable not found in PATH")
 
         batch_netlist = self._ensure_print_command(netlist)
 
@@ -104,8 +104,8 @@ class CircuitSimulator:
 
                 parsed = _parse_rawspice(raw)
                 if not parsed["time"]:
-                    logger.warning("ngspice produced no data, falling back to mock")
-                    return self._mock_results(netlist, error=proc.stderr[:200] if proc.stderr else None)
+                    logger.warning("ngspice produced no data, returning degraded analytical preview")
+                    return self._degraded_results(netlist, error=proc.stderr[:200] if proc.stderr else "ngspice produced no data")
 
                 result = {
                     "status": "success",
@@ -121,10 +121,10 @@ class CircuitSimulator:
 
             except subprocess.TimeoutExpired:
                 logger.error("ngspice simulation timed out")
-                return self._mock_results(netlist, error="Simulation timed out")
+                return self._degraded_results(netlist, error="Simulation timed out")
             except Exception as e:
                 logger.error(f"ngspice error: {e}")
-                return self._mock_results(netlist, error=str(e))
+                return self._degraded_results(netlist, error=str(e))
 
     def _ensure_print_command(self, netlist: str) -> str:
         """Add .print tran if the netlist lacks output commands."""
@@ -139,8 +139,8 @@ class CircuitSimulator:
             return "\n".join(lines)
         return netlist
 
-    def _mock_results(self, netlist: str, error: Optional[str] = None) -> Dict[str, Any]:
-        """Generate deterministic mock results when ngspice is unavailable."""
+    def _degraded_results(self, netlist: str, error: Optional[str] = None) -> Dict[str, Any]:
+        """Generate deterministic preview data and mark it as degraded."""
         time_points = np.linspace(0, 1, 100).tolist()
         lower = netlist.lower()
 
@@ -152,7 +152,7 @@ class CircuitSimulator:
             waveform = (3.3 * np.sin(2 * np.pi * np.array(time_points))).tolist()
 
         result: Dict[str, Any] = {
-            "status": "success" if error is None else "failed",
+            "status": "degraded",
             "time": time_points,
             "voltages": {
                 "output": waveform,
@@ -162,10 +162,11 @@ class CircuitSimulator:
             "analysis_type": "transient",
             "simulation_time": 0.2,
             "nodes": ["output", "input"],
+            "degraded": True,
+            "message": f"Analytical preview used because real ngspice simulation was unavailable: {error}",
         }
         if error:
             result["error"] = error
-            result["message"] = f"Mock data used due to error: {error}"
         return result
 
     def analyze_operating_point(self, netlist: str) -> Dict[str, Any]:

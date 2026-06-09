@@ -11,8 +11,8 @@ class AIService:
         """解析电路描述"""
         try:
             response = await self.http_client.post(
-                f"{settings.AI_SERVICE_URL}/api/ai/parse",
-                json=ai_request.dict()
+                f"{settings.AI_SERVICE_URL}/ai/parse",
+                json=ai_request.model_dump()
             )
             response.raise_for_status()
             return AIResponse(**response.json())
@@ -22,7 +22,7 @@ class AIService:
     async def get_models(self) -> dict:
         """获取可用模型列表"""
         try:
-            response = await self.http_client.get(f"{settings.AI_SERVICE_URL}/api/ai/models")
+            response = await self.http_client.get(f"{settings.AI_SERVICE_URL}/ai/models")
             response.raise_for_status()
             return response.json()
         except Exception as e:

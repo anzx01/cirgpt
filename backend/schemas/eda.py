@@ -7,8 +7,9 @@ from typing import Dict, Any, Optional
 
 class NetlistRequest(BaseModel):
     """Netlist generation request"""
-    description: str
+    description: Optional[str] = None
     requirements: Optional[Dict[str, Any]] = None
+    circuit_ir: Optional[Dict[str, Any]] = None
 
 
 class NetlistResponse(BaseModel):

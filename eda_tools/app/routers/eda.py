@@ -3,7 +3,7 @@ EDA tools router for circuit design operations
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
 import sys
 import os
@@ -16,6 +16,7 @@ from svg_generator import SVGSchematicGenerator
 from pyspice.simulator import simulate_circuit
 from kicad.pcb_generator import generate_pcb
 from bom.bom_generator import generate_bom
+from circuit_ir import generate_kicad_pcb_preview, generate_spice_netlist
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,11 @@ class SchematicRequest(BaseModel):
     netlist: str
 
 
+class NetlistRequest(BaseModel):
+    """Request for SPICE netlist generation from CircuitIR"""
+    circuit_ir: Dict[str, Any]
+
+
 class SimulationRequest(BaseModel):
     """Request for circuit simulation"""
     netlist: str
@@ -34,13 +40,35 @@ class SimulationRequest(BaseModel):
 
 class PCBRequest(BaseModel):
     """Request for PCB generation"""
-    netlist: str
+    netlist: Optional[str] = None
+    circuit_ir: Optional[Dict[str, Any]] = None
 
 
 class BOMRequest(BaseModel):
     """Request for BOM generation"""
     netlist: str
     design_name: str = "Circuit"
+
+
+@router.post("/netlist")
+async def generate_netlist_endpoint(request: NetlistRequest) -> Dict[str, Any]:
+    """
+    Generate a SPICE netlist from CircuitIR.
+    """
+    try:
+        logger.info("Generating SPICE netlist from CircuitIR")
+        netlist = generate_spice_netlist(request.circuit_ir)
+        return {
+            "success": True,
+            "netlist": netlist,
+            "message": "SPICE netlist generated from CircuitIR",
+        }
+    except Exception as e:
+        logger.error(f"Error generating netlist: {e}")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to generate netlist: {str(e)}"
+        )
 
 
 @router.post("/schematic")
@@ -139,7 +167,16 @@ async def generate_pcb_endpoint(request: PCBRequest) -> Dict[str, Any]:
     try:
         logger.info("Generating PCB layout")
 
-        layout = generate_pcb(request.netlist)
+        netlist = request.netlist
+        if not netlist and request.circuit_ir:
+            netlist = generate_spice_netlist(request.circuit_ir)
+        if not netlist:
+            raise ValueError("Either netlist or circuit_ir is required")
+
+        layout = generate_pcb(netlist)
+        if request.circuit_ir:
+            layout["kicad_pcb"] = generate_kicad_pcb_preview(request.circuit_ir)
+            layout["manufacturing_status"] = "experimental_preview_only"
 
         return {
             "success": True,

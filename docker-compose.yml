@@ -10,7 +10,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://api-gateway:8000/api
-      - NEXT_PUBLIC_WEBSOCKET_URL=ws://api-gateway:8000
+      - NEXT_PUBLIC_WEBSOCKET_URL=http://api-gateway:8000
     depends_on:
       - api-gateway
     volumes:
@@ -110,7 +110,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.celery
-    command: celery -A app.celery_config beat --loglevel=info
+    command: celery -A app.worker.celery_app beat --loglevel=info
     environment:
       - DB_URL=sqlite:///./app.db
       - REDIS_URL=redis://redis:6379

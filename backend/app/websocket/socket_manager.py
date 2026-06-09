@@ -4,7 +4,10 @@ Socket.io manager for real-time progress updates
 import logging
 from typing import Dict, List
 import asyncio
-from socketio import AsyncServer
+try:
+    from socketio import AsyncServer
+except ImportError:
+    AsyncServer = None
 from models import SessionLocal, CircuitDesign
 
 logger = logging.getLogger(__name__)
@@ -15,6 +18,12 @@ class SocketManager:
 
     def __init__(self):
         """Initialize socket manager"""
+        if AsyncServer is None:
+            self.socket_server = None
+            self.active_connections: Dict[str, str] = {}
+            logger.warning("python-socketio is not installed; realtime updates are disabled")
+            return
+
         self.socket_server = AsyncServer(async_mode="asgi", cors_allowed_origins="*")
         self.active_connections: Dict[str, str] = {}  # {sid: design_id}
 
@@ -72,16 +81,18 @@ class SocketManager:
         try:
             design = db.query(CircuitDesign).filter(CircuitDesign.id == design_id).first()
             if design:
+                payload = {
+                    "design_id": design_id,
+                    "status": design.status,
+                    "progress": design.progress if design.progress is not None else self._calculate_progress(design.status),
+                    "message": design.current_step or self._get_status_message(design.status)
+                }
                 await self.socket_server.emit(
-                    "design_status",
-                    {
-                        "design_id": design_id,
-                        "status": design.status,
-                        "progress": self._calculate_progress(design.status),
-                        "message": self._get_status_message(design.status)
-                    },
+                    "design.status",
+                    payload,
                     to=sid
                 )
+                await self.socket_server.emit("design_status", payload, to=sid)
         finally:
             db.close()
 
@@ -116,21 +127,27 @@ class SocketManager:
             error: Whether this is an error message
         """
         # Find all clients subscribed to this design
+        if self.socket_server is None:
+            return
+
         target_sids = [sid for sid, did in self.active_connections.items() if did == design_id]
 
         if target_sids:
-            event_type = "design_error" if error else "design_progress"
+            event_type = "design.failed" if error else "design.progress"
+            legacy_event_type = "design_error" if error else "design_progress"
+            payload = {
+                "design_id": design_id,
+                "message": message,
+                "progress": progress,
+                "timestamp": asyncio.get_event_loop().time()
+            }
 
             await self.socket_server.emit(
                 event_type,
-                {
-                    "design_id": design_id,
-                    "message": message,
-                    "progress": progress,
-                    "timestamp": asyncio.get_event_loop().time()
-                },
+                payload,
                 to=target_sids
             )
+            await self.socket_server.emit(legacy_event_type, payload, to=target_sids)
 
             logger.info(f"Broadcasted progress to {len(target_sids)} clients for design {design_id}")
 
@@ -141,6 +158,13 @@ class SocketManager:
         Args:
             design_id: Circuit design ID
         """
+        if self.socket_server is None:
+            return
+
+        target_sids = [sid for sid, did in self.active_connections.items() if did == design_id]
+        payload = {"design_id": design_id, "message": "Design generation complete!", "progress": 100}
+        if target_sids:
+            await self.socket_server.emit("design.completed", payload, to=target_sids)
         await self.broadcast_progress(design_id, "Design generation complete!", 100)
 
     async def broadcast_error(self, design_id: int, error_message: str):

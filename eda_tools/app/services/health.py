@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Dict, Any
 import os
+import shutil
 from app.config import settings
 from app.utils.redis import get_redis_client
 
@@ -18,10 +19,13 @@ class HealthService:
         checks = {
             "eda-service": {"status": "ok"},
             "redis": await self._check_redis(),
-            "storage": await self._check_storage()
+            "storage": await self._check_storage(),
+            "ngspice": await self._check_ngspice(),
+            "kicad": await self._check_kicad(),
         }
         
-        overall_status = "ok" if all(check["status"] == "ok" for check in checks.values()) else "error"
+        statuses = {check["status"] for check in checks.values()}
+        overall_status = "error" if "error" in statuses else ("degraded" if "degraded" in statuses or "warning" in statuses else "ok")
         
         return {
             "status": overall_status,
@@ -51,3 +55,21 @@ class HealthService:
                 return {"status": "warning", "message": "Storage directory not found, will be created when needed", "storage_path": settings.STORAGE_PATH}
         except Exception as e:
             return {"status": "error", "message": f"Storage check failed: {str(e)}"}
+
+    async def _check_ngspice(self) -> Dict[str, Any]:
+        for executable in ["ngspice", "ngspice-64", "ngspice64"]:
+            if shutil.which(executable):
+                return {"status": "ok", "message": f"Found {executable}"}
+        return {
+            "status": "degraded",
+            "message": "ngspice not found; simulation returns analytical preview data only.",
+        }
+
+    async def _check_kicad(self) -> Dict[str, Any]:
+        for executable in [settings.KICAD_PATH, "kicad-cli", "kicad"]:
+            if executable and shutil.which(executable):
+                return {"status": "ok", "message": f"Found {executable}"}
+        return {
+            "status": "degraded",
+            "message": "KiCad CLI not found; PCB output is limited to experimental preview files.",
+        }

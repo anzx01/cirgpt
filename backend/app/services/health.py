@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Dict, Any
 from fastapi import HTTPException
+from sqlalchemy import text
 from app.config import settings
 from app.utils.redis import get_redis_client
 from app.utils.database import get_db
@@ -24,7 +25,8 @@ class HealthService:
             "eda-service": await self._check_eda_service()
         }
         
-        overall_status = "ok" if all(check["status"] == "ok" for check in checks.values()) else "error"
+        statuses = {check["status"] for check in checks.values()}
+        overall_status = "error" if "error" in statuses else ("degraded" if "warning" in statuses or "degraded" in statuses else "ok")
         
         return {
             "status": overall_status,
@@ -46,7 +48,7 @@ class HealthService:
         """检查数据库连接"""
         try:
             db = next(get_db())
-            db.execute("SELECT 1")
+            db.execute(text("SELECT 1"))
             return {"status": "ok", "message": "Database connection successful"}
         except Exception as e:
             return {"status": "error", "message": f"Database connection failed: {str(e)}"}

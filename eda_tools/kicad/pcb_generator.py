@@ -4,6 +4,7 @@ KiCad integration for PCB layout generation
 import logging
 from typing import Dict, List, Any
 import re
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -489,8 +490,10 @@ def generate_pcb(netlist: str) -> Dict[str, Any]:
         pcb_svg = generator.generate_pcb_visualization(layout)
         layout["visualization"] = pcb_svg
 
-        # Generate Gerber files
-        gerber = generator.generate_gerber_files(layout)
-        layout["gerber_files"] = gerber
+        layout["manufacturing_status"] = "experimental_preview_only"
+        layout["warnings"] = [
+            "PCB output is a placement/routing preview only; Gerber export is disabled in v1.",
+            "Run KiCad ERC/DRC and manual review before manufacturing.",
+        ]
 
     return layout

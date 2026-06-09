@@ -14,20 +14,25 @@ import {
   Alert,
   Tabs,
   Tab,
-  CircularProgress
+  CircularProgress,
+  Stack,
+  Divider
 } from '@mui/material';
 import {
   Description as DescriptionIcon,
   ShowChart as SimulationIcon,
   ViewInAr as PcbIcon,
   Checklist as BomIcon,
-  Home as HomeIcon
+  Home as HomeIcon,
+  FactCheck as ValidationIcon,
+  Download as DownloadIcon
 } from '@mui/icons-material';
-// import { io } from 'socket.io-client'; // Temporarily disabled
+import { io } from 'socket.io-client';
 import SchematicViewer from '../../../components/SchematicViewer';
 import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
 import BomViewer from '../../../components/BomViewer';
+import { API_BASE_URL, WEBSOCKET_URL } from '../../../config.mjs';
 
 function TabPanel({ children, value, index }) {
   return (
@@ -56,7 +61,7 @@ export default function DesignResultPage() {
   useEffect(() => {
     const fetchDesign = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/circuit/${designId}/`);
+        const response = await fetch(`${API_BASE_URL}/circuit/${designId}`);
 
         if (!response.ok) {
           throw new Error('Failed to fetch design');
@@ -64,36 +69,35 @@ export default function DesignResultPage() {
 
         const data = await response.json();
         setDesign(data);
+        setLoading(false);
 
         // Update progress based on status
         if (data.status === 'completed') {
           setProgress({
             message: 'Design generation complete!',
-            progress: 100,
+            progress: data.progress ?? 100,
             status: 'completed'
           });
-          setLoading(false);
           return true; // Signal to stop polling
         } else if (data.status === 'failed') {
           setProgress({
             message: `Error: ${data.error_message || 'Generation failed'}`,
-            progress: 0,
+            progress: data.progress ?? 0,
             status: 'failed'
           });
           setError(data.error_message);
-          setLoading(false);
           return true; // Signal to stop polling
         } else if (data.status === 'processing') {
           setProgress({
-            message: 'Processing...',
-            progress: 50,
+            message: data.current_step || 'Processing...',
+            progress: data.progress ?? 50,
             status: 'processing'
           });
           return false; // Continue polling
         } else if (data.status === 'pending') {
           setProgress({
-            message: 'Waiting to start...',
-            progress: 10,
+            message: data.current_step || 'Waiting to start...',
+            progress: data.progress ?? 10,
             status: 'pending'
           });
           return false; // Continue polling
@@ -123,8 +127,53 @@ export default function DesignResultPage() {
     };
   }, [designId]);
 
+  useEffect(() => {
+    const socket = io(WEBSOCKET_URL, {
+      path: '/socket.io',
+      transports: ['websocket', 'polling']
+    });
+
+    socket.on('connect', () => {
+      socket.emit('subscribe', { design_id: Number(designId) });
+    });
+
+    socket.on('design.progress', (event) => {
+      setProgress({
+        message: event.message,
+        progress: event.progress,
+        status: 'processing'
+      });
+    });
+
+    socket.on('design.completed', () => {
+      setProgress({
+        message: 'Design generation complete!',
+        progress: 100,
+        status: 'completed'
+      });
+    });
+
+    socket.on('design.failed', (event) => {
+      setProgress({
+        message: event.message,
+        progress: event.progress ?? 0,
+        status: 'failed'
+      });
+      setError(event.message);
+    });
+
+    return () => {
+      socket.emit('unsubscribe', { design_id: Number(designId) });
+      socket.disconnect();
+    };
+  }, [designId]);
+
   const handleTabChange = (event, newValue) => {
     setTabValue(newValue);
+  };
+
+  const handleArtifactDownload = (artifactId) => {
+    window.open(`${API_BASE_URL}/circuit/${designId}/artifacts/${artifactId}`, '_blank', 'noopener,noreferrer');
   };
 
   if (loading) {
@@ -230,6 +279,11 @@ export default function DesignResultPage() {
             label="Bill of Materials"
             disabled={isProcessing || !design?.bom}
           />
+          <Tab
+            icon={<ValidationIcon />}
+            label="Validation"
+            disabled={isProcessing || !design?.validation}
+          />
         </Tabs>
 
         <TabPanel value={tabValue} index={0}>
@@ -246,6 +300,58 @@ export default function DesignResultPage() {
 
         <TabPanel value={tabValue} index={3}>
           <BomViewer bom={design?.bom} />
+        </TabPanel>
+
+        <TabPanel value={tabValue} index={4}>
+          <Box sx={{ px: 3 }}>
+            <Typography variant="h6" fontWeight="bold" gutterBottom>
+              Validation Report
+            </Typography>
+            <Alert severity={design?.validation?.status === 'passed' ? 'success' : 'warning'} sx={{ mb: 2 }}>
+              Status: <strong>{design?.validation?.status || 'unknown'}</strong>
+            </Alert>
+
+            <Grid container spacing={2} sx={{ mb: 3 }}>
+              {Object.entries(design?.validation?.checks || {}).map(([key, value]) => (
+                <Grid item xs={12} md={6} key={key}>
+                  <Paper elevation={0} sx={{ p: 2, border: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      {key}
+                    </Typography>
+                    <Typography variant="body1">{String(value)}</Typography>
+                  </Paper>
+                </Grid>
+              ))}
+            </Grid>
+
+            {design?.validation?.warnings?.length > 0 && (
+              <Alert severity="warning" sx={{ mb: 3 }}>
+                <Stack spacing={1}>
+                  {design.validation.warnings.map((warning, index) => (
+                    <Typography variant="body2" key={index}>{warning}</Typography>
+                  ))}
+                </Stack>
+              </Alert>
+            )}
+
+            <Divider sx={{ my: 3 }} />
+
+            <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+              Artifacts
+            </Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+              {Object.entries(design?.artifacts || {}).map(([artifactId, artifact]) => (
+                <Button
+                  key={artifactId}
+                  variant="outlined"
+                  startIcon={<DownloadIcon />}
+                  onClick={() => handleArtifactDownload(artifactId)}
+                >
+                  {artifact.filename || artifactId}
+                </Button>
+              ))}
+            </Box>
+          </Box>
         </TabPanel>
       </Paper>
 

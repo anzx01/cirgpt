@@ -12,6 +12,10 @@ class CircuitDesignUpdate(BaseModel):
     """Schema for updating a circuit design"""
     description: Optional[str] = None
     status: Optional[str] = None
+    progress: Optional[int] = None
+    current_step: Optional[str] = None
+    job_id: Optional[str] = None
+    circuit_ir: Optional[Dict[str, Any]] = None
     parsed_requirements: Optional[Dict[str, Any]] = None
     netlist: Optional[str] = None
     schematic_svg: Optional[str] = None
@@ -23,6 +27,8 @@ class CircuitDesignUpdate(BaseModel):
     pcb_image: Optional[str] = None
     bom: Optional[Dict[str, Any]] = None
     estimated_cost: Optional[float] = None
+    validation: Optional[Dict[str, Any]] = None
+    artifacts: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
 
 
@@ -31,6 +37,10 @@ class CircuitDesignResponse(BaseModel):
     id: int
     description: str
     status: str
+    progress: Optional[int] = 0
+    current_step: Optional[str] = None
+    job_id: Optional[str] = None
+    circuit_ir: Optional[Dict[str, Any]] = None
     parsed_requirements: Optional[Dict[str, Any]] = None
     netlist: Optional[str] = None
     schematic_svg: Optional[str] = None
@@ -42,6 +52,8 @@ class CircuitDesignResponse(BaseModel):
     pcb_image: Optional[str] = None
     bom: Optional[Dict[str, Any]] = None
     estimated_cost: Optional[float] = None
+    validation: Optional[Dict[str, Any]] = None
+    artifacts: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

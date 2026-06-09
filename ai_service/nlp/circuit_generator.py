@@ -243,6 +243,9 @@ class CircuitGenerator:
         Returns:
             SPICE netlist string
         """
+        if requirements.get("schema_version") == "1.0":
+            return self.generate_from_ir(requirements)
+
         topology = requirements.get("topology", {})
         circuit_type = topology.get("type", "unknown")
         specs = requirements.get("specifications", {})
@@ -260,6 +263,57 @@ class CircuitGenerator:
             # Generic circuit - simple LED as fallback
             logger.warning(f"Unknown circuit type: {circuit_type}, using LED circuit")
             return self.generate_led_circuit(specs)
+
+    def generate_from_ir(self, circuit_ir: Dict[str, Any]) -> str:
+        """
+        Compatibility-only SPICE generation for CircuitIR.
+
+        The main v1 pipeline generates SPICE in the EDA service. This keeps the
+        legacy /ai/generate endpoint useful for direct callers.
+        """
+        circuit_type = circuit_ir.get("circuit_type")
+        constraints = circuit_ir.get("constraints", {})
+
+        if circuit_type == "led_current_limiter":
+            specs = {
+                "voltage": constraints.get("supply_voltage_v", 5.0),
+                "current": constraints.get("target_current_a", 0.02),
+            }
+            return self.generate_led_circuit(specs)
+
+        if circuit_type == "rc_low_pass_filter":
+            resistance = constraints.get("resistance_ohm", 10_000.0)
+            capacitance = constraints.get("capacitance_f", 15.9e-9)
+            return "\n".join([
+                "* RC low-pass filter",
+                "V1 IN 0 AC 1 SIN(0 1 1000)",
+                f"R1 IN OUT {resistance:g}",
+                f"C1 OUT 0 {capacitance:g}",
+                ".ac dec 20 10 100k",
+                ".tran 10u 5m",
+                ".end",
+            ])
+
+        if circuit_type == "555_timer_blinker":
+            return self.generate_555_timer_blinker({
+                "voltage": constraints.get("supply_voltage_v", 9.0),
+                "frequency": constraints.get("target_frequency_hz", 1.0),
+            })
+
+        if circuit_type in {"opamp_inverting", "opamp_non_inverting"}:
+            gain = constraints.get("gain", 10.0)
+            if circuit_type == "opamp_inverting":
+                gain = -abs(gain)
+            return "\n".join([
+                "* Ideal op-amp amplifier",
+                "Vin IN 0 SIN(0 0.1 1000)",
+                f"EGAIN OUT 0 IN 0 {gain:g}",
+                "RLOAD OUT 0 100k",
+                ".tran 10u 5m",
+                ".end",
+            ])
+
+        raise ValueError(f"Unsupported CircuitIR type: {circuit_type}")
 
 
 def generate_circuit_design(requirements: Dict[str, Any]) -> str:

@@ -2,12 +2,16 @@
 CircuitService - Handles circuit design CRUD operations and orchestration
 """
 import logging
+import inspect
+import json
+import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 
 from models import CircuitDesign, DesignHistory
 from schemas import CircuitDesignCreate, CircuitDesignUpdate
+from app.config import settings
 from app.utils.http_client import get_http_client
 from app.websocket import notify_progress, notify_complete, notify_error
 
@@ -25,8 +29,8 @@ class CircuitService:
             db: Database session
         """
         self.db = db
-        self.ai_service_url = "http://localhost:8001"
-        self.eda_service_url = "http://localhost:8002"
+        self.ai_service_url = settings.AI_SERVICE_URL.rstrip("/")
+        self.eda_service_url = settings.EDA_SERVICE_URL.rstrip("/")
 
     async def create_design(self, design_data: CircuitDesignCreate) -> CircuitDesign:
         """
@@ -42,7 +46,9 @@ class CircuitService:
 
         design = CircuitDesign(
             description=design_data.description,
-            status="pending"
+            status="pending",
+            progress=0,
+            current_step="Waiting to start"
         )
 
         self.db.add(design)
@@ -150,17 +156,24 @@ class CircuitService:
         try:
             # Update status to processing
             design.status = "processing"
+            design.progress = 0
+            design.current_step = "Starting generation"
+            design.job_id = design.job_id or f"local-{design_id}-{uuid.uuid4().hex[:8]}"
+            design.error_message = None
             self.db.commit()
 
-            # Step 1: Parse natural language
+            # Step 1: Parse natural language into CircuitIR
             await self._update_progress(progress_callback, design_id,
-                                       "Parsing natural language", 10)
-            parsed_requirements = await self._parse_description(design.description)
+                                       "Parsing natural language into CircuitIR", 10)
+            circuit_ir = await self._parse_description(design.description)
+            if not circuit_ir.get("supported", False):
+                warnings = circuit_ir.get("warnings") or ["Unsupported circuit request"]
+                raise ValueError(warnings[0])
 
-            # Step 2: Generate netlist
+            # Step 2: Generate netlist from IR
             await self._update_progress(progress_callback, design_id,
-                                       "Generating circuit netlist", 30)
-            netlist = await self._generate_netlist(parsed_requirements)
+                                       "Generating SPICE netlist", 30)
+            netlist = await self._generate_netlist_from_ir(circuit_ir)
 
             # Step 3: Generate schematic
             await self._update_progress(progress_callback, design_id,
@@ -174,25 +187,41 @@ class CircuitService:
 
             # Step 5: Generate PCB
             await self._update_progress(progress_callback, design_id,
-                                       "Generating PCB layout", 85)
-            pcb_result = await self._generate_pcb(netlist)
+                                       "Generating experimental PCB preview", 85)
+            pcb_result = await self._generate_pcb(netlist, circuit_ir)
 
             # Step 6: Generate BOM
             await self._update_progress(progress_callback, design_id,
                                        "Generating bill of materials", 95)
             bom_result = await self._generate_bom(netlist, f"Circuit_{design_id}")
 
+            validation = self._build_validation_report(circuit_ir, simulation_result, pcb_result)
+            artifacts = self._build_artifacts(
+                netlist=netlist,
+                schematic_svg=schematic_result.get("svg"),
+                simulation_result=simulation_result.get("results"),
+                pcb_layout=pcb_result.get("layout"),
+                bom=bom_result.get("bom"),
+                validation=validation,
+            )
+
             # Update design with results
-            design.parsed_requirements = parsed_requirements
+            design.circuit_ir = circuit_ir
+            design.parsed_requirements = circuit_ir
             design.netlist = netlist
             design.schematic_svg = schematic_result.get("svg")
             design.simulation_results = simulation_result.get("results")
             design.simulation_status = simulation_result.get("results", {}).get("status")
             design.pcb_layout = pcb_result.get("layout")
             design.pcb_image = pcb_result.get("layout", {}).get("visualization")
+            design.pcb_gerber_files = None
             design.bom = bom_result.get("bom")
             design.estimated_cost = bom_result.get("bom", {}).get("summary", {}).get("total_cost")
+            design.validation = validation
+            design.artifacts = artifacts
             design.status = "completed"
+            design.progress = 100
+            design.current_step = "Design generation complete"
             design.completed_at = datetime.utcnow()
 
             self.db.commit()
@@ -202,12 +231,20 @@ class CircuitService:
                                        "Design generation complete", 100)
 
             logger.info(f"✓ Circuit generation complete for design {design_id}")
-            return {"success": True, "design_id": design_id}
+            await notify_complete(design_id)
+            return {"success": True, "design_id": design_id, "job_id": design.job_id}
 
         except Exception as e:
             logger.error(f"✗ Error generating circuit {design_id}: {e}")
             design.status = "failed"
+            design.progress = 0
+            design.current_step = "Generation failed"
             design.error_message = str(e)
+            design.validation = {
+                "status": "failed",
+                "errors": [str(e)],
+                "warnings": [],
+            }
             self.db.commit()
 
             await self._update_progress(progress_callback, design_id,
@@ -239,26 +276,26 @@ class CircuitService:
         data = response.json()
         return data["requirements"]
 
-    async def _generate_netlist(self, requirements: Dict[str, Any]) -> str:
+    async def _generate_netlist_from_ir(self, circuit_ir: Dict[str, Any]) -> str:
         """
-        Generate netlist from requirements using AI service
+        Generate netlist from CircuitIR using EDA service
 
         Args:
-            requirements: Parsed requirements
+            circuit_ir: Structured circuit IR
 
         Returns:
             SPICE netlist
         """
-        logger.info("Generating netlist with AI service")
+        logger.info("Generating netlist with EDA service")
 
         http_client = get_http_client()
         response = await http_client.post(
-            f"{self.ai_service_url}/ai/generate",
-            json={"requirements": requirements}
+            f"{self.eda_service_url}/eda/netlist",
+            json={"circuit_ir": circuit_ir}
         )
 
         if response.status_code != 200:
-            raise Exception(f"AI service error: {response.status_code}")
+            raise Exception(f"EDA service error: {response.status_code} {response.text}")
 
         data = response.json()
         return data["netlist"]
@@ -309,7 +346,7 @@ class CircuitService:
 
         return response.json()
 
-    async def _generate_pcb(self, netlist: str) -> Dict[str, Any]:
+    async def _generate_pcb(self, netlist: str, circuit_ir: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate PCB layout using EDA service
 
@@ -324,7 +361,7 @@ class CircuitService:
         http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/pcb",
-            json={"netlist": netlist}
+            json={"netlist": netlist, "circuit_ir": circuit_ir}
         )
 
         if response.status_code != 200:
@@ -375,9 +412,103 @@ class CircuitService:
         else:
             await notify_progress(design_id, message, progress)
 
+        design = await self.get_design(design_id)
+        if design:
+            design.progress = progress
+            design.current_step = message
+            design.updated_at = datetime.utcnow()
+            self.db.commit()
+
         # Call callback if provided
         if callback:
-            await callback(design_id, message, progress, error)
+            result = callback(design_id, message, progress, error)
+            if inspect.isawaitable(result):
+                await result
+
+    def _build_validation_report(
+        self,
+        circuit_ir: Dict[str, Any],
+        simulation_result: Dict[str, Any],
+        pcb_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build an explicit validation/degraded-capability report."""
+        simulation = simulation_result.get("results", {})
+        pcb_layout = pcb_result.get("layout", {})
+
+        warnings = list(circuit_ir.get("warnings") or [])
+        if simulation.get("message"):
+            warnings.append(simulation["message"])
+        warnings.extend(pcb_layout.get("warnings") or [])
+
+        status = "passed"
+        if simulation.get("status") == "degraded" or pcb_layout.get("manufacturing_status") == "experimental_preview_only":
+            status = "degraded"
+        if simulation.get("status") == "failed":
+            status = "failed"
+
+        return {
+            "status": status,
+            "circuit_type": circuit_ir.get("circuit_type"),
+            "checks": {
+                "circuit_ir_supported": circuit_ir.get("supported", False),
+                "spice_netlist_generated": True,
+                "simulation_status": simulation.get("status", "unknown"),
+                "pcb_status": pcb_layout.get("manufacturing_status", "preview"),
+                "gerber_export": "disabled_in_v1",
+            },
+            "warnings": [warning for warning in warnings if warning],
+            "errors": [] if status != "failed" else [simulation.get("error", "Simulation failed")],
+        }
+
+    def _build_artifacts(
+        self,
+        netlist: str,
+        schematic_svg: Optional[str],
+        simulation_result: Optional[Dict[str, Any]],
+        pcb_layout: Optional[Dict[str, Any]],
+        bom: Optional[Dict[str, Any]],
+        validation: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Create downloadable artifact records stored with the design."""
+        artifacts: Dict[str, Dict[str, Any]] = {
+            "netlist": {
+                "filename": "circuit.spice",
+                "media_type": "text/plain",
+                "content": netlist,
+            },
+            "validation_json": {
+                "filename": "validation.json",
+                "media_type": "application/json",
+                "content": json.dumps(validation, indent=2),
+            },
+        }
+
+        if schematic_svg:
+            artifacts["schematic_svg"] = {
+                "filename": "schematic.svg",
+                "media_type": "image/svg+xml",
+                "content": schematic_svg,
+            }
+        if bom and bom.get("csv"):
+            artifacts["bom_csv"] = {
+                "filename": "bom.csv",
+                "media_type": "text/csv",
+                "content": bom["csv"],
+            }
+        if pcb_layout and pcb_layout.get("kicad_pcb"):
+            artifacts["kicad_pcb"] = {
+                "filename": "preview.kicad_pcb",
+                "media_type": "application/octet-stream",
+                "content": pcb_layout["kicad_pcb"],
+            }
+        if simulation_result:
+            artifacts["simulation_json"] = {
+                "filename": "simulation.json",
+                "media_type": "application/json",
+                "content": json.dumps(simulation_result, indent=2),
+            }
+
+        return artifacts
 
     def _save_to_history(self, design: CircuitDesign, change_description: str):
         """
@@ -423,6 +554,9 @@ class CircuitService:
         return {
             "id": design.id,
             "status": design.status,
+            "job_id": design.job_id,
+            "current_step": design.current_step,
+            "progress": design.progress,
             "error_message": design.error_message,
             "created_at": design.created_at.isoformat() if design.created_at else None,
             "completed_at": design.completed_at.isoformat() if design.completed_at else None

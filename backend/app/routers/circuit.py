@@ -1,14 +1,16 @@
 """
 Circuit design router
 """
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Response
 from sqlalchemy.orm import Session
 from typing import List
 import logging
+import uuid
 
 from schemas import CircuitDesignCreate, CircuitDesignUpdate, CircuitDesignResponse, DesignStatus
 from app.services.circuit_service import CircuitService
 from app.utils.database import get_db
+from models import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,16 @@ router = APIRouter(tags=["circuit"])
 def get_circuit_service(db: Session = Depends(get_db)) -> CircuitService:
     """Dependency to get circuit service"""
     return CircuitService(db)
+
+
+async def run_generation_background(design_id: int):
+    """Run generation with a fresh DB session outside request scope."""
+    db = SessionLocal()
+    try:
+        service = CircuitService(db)
+        await service.generate_circuit(design_id)
+    finally:
+        db.close()
 
 
 @router.post("/", response_model=CircuitDesignResponse, summary="Create circuit design")
@@ -121,12 +133,20 @@ async def generate_circuit(
     if design.status == "processing":
         return {"message": "Circuit generation is already in progress"}
 
-    # Add background task for generation
-    background_tasks.add_task(service.generate_circuit, design_id)
+    job_id = f"local-{design_id}-{uuid.uuid4().hex[:8]}"
+    design.status = "processing"
+    design.progress = 0
+    design.current_step = "Queued for generation"
+    design.job_id = job_id
+    design.error_message = None
+    service.db.commit()
+
+    background_tasks.add_task(run_generation_background, design_id)
 
     return {
         "message": "Circuit generation started",
         "design_id": design_id,
+        "job_id": job_id,
         "status": "processing"
     }
 
@@ -141,3 +161,26 @@ async def get_circuit_status(
     if "error" in status:
         raise HTTPException(status_code=404, detail=status["error"])
     return status
+
+
+@router.get("/{design_id}/artifacts/{artifact_id}", summary="Download generated artifact")
+async def download_artifact(
+    design_id: int,
+    artifact_id: str,
+    service: CircuitService = Depends(get_circuit_service)
+):
+    """Download an artifact stored with a completed design."""
+    design = await service.get_design(design_id)
+    if not design:
+        raise HTTPException(status_code=404, detail="Circuit design not found")
+
+    artifacts = design.artifacts or {}
+    artifact = artifacts.get(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    filename = artifact.get("filename", artifact_id)
+    media_type = artifact.get("media_type", "application/octet-stream")
+    content = artifact.get("content", "")
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=content, media_type=media_type, headers=headers)

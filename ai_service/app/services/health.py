@@ -20,7 +20,8 @@ class HealthService:
             "model": await self._check_model()
         }
         
-        overall_status = "ok" if all(check["status"] == "ok" for check in checks.values()) else "error"
+        statuses = {check["status"] for check in checks.values()}
+        overall_status = "error" if "error" in statuses else ("degraded" if "warning" in statuses or "degraded" in statuses else "ok")
         
         return {
             "status": overall_status,
@@ -46,6 +47,6 @@ class HealthService:
             if os.path.exists(settings.MODEL_PATH):
                 return {"status": "ok", "message": "Model files found", "model_path": settings.MODEL_PATH}
             else:
-                return {"status": "warning", "message": "Model files not found", "model_path": settings.MODEL_PATH}
+                return {"status": "degraded", "message": "Model files not found; rule-based CircuitIR parser is active", "model_path": settings.MODEL_PATH}
         except Exception as e:
             return {"status": "error", "message": f"Model check failed: {str(e)}"}

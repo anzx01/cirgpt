@@ -128,6 +128,7 @@ class SPICEParser:
         # Voltage sources: V -> NAME node1 node2 TYPE value [params]
         # Current sources: I -> NAME node1 node2 TYPE value [params]
         # Transistors: Q -> NAME c b e model [params]
+        # Controlled sources: E/G -> NAME out+ out- ctrl+ ctrl- gain
         # ICs: U -> NAME pin1 pin2 ... [params]
 
         nodes = []
@@ -211,6 +212,19 @@ class SPICEParser:
                     i += 1
                 if i < len(parts):
                     model = parts[i]
+                    i += 1
+
+        elif comp_type in ['E', 'G']:
+            if len(parts) >= 6:
+                nodes = parts[1:5]
+                value = parts[5]
+                i = 6
+            else:
+                while i < len(parts) and len(nodes) < 4:
+                    nodes.append(parts[i])
+                    i += 1
+                if i < len(parts):
+                    value = parts[i]
                     i += 1
 
         # Handle ICs (U) - unknown number of pins

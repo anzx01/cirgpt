@@ -1,8 +1,13 @@
 """
 CircuitBERT model loader and inference
 """
-import torch
-from transformers import AutoTokenizer, AutoModel
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+except ImportError:  # Optional in the KiCad-first MVP.
+    torch = None
+    AutoTokenizer = None
+    AutoModel = None
 from typing import Dict, List, Any
 import logging
 
@@ -22,12 +27,17 @@ class CircuitBERTModel:
         self.model_name = model_name
         self.tokenizer = None
         self.model = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch is None:
+            self.device = None
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {self.device}")
 
     def load(self):
         """Load the model and tokenizer"""
         try:
+            if torch is None or AutoTokenizer is None or AutoModel is None:
+                raise RuntimeError("torch/transformers are not installed")
             logger.info(f"Loading CircuitBERT model: {self.model_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.model = AutoModel.from_pretrained(self.model_name)
@@ -39,7 +49,7 @@ class CircuitBERTModel:
             logger.warning("Will use rule-based fallback instead")
             raise
 
-    def encode_text(self, text: str) -> torch.Tensor:
+    def encode_text(self, text: str):
         """
         Encode text using CircuitBERT
 

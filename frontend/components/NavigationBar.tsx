@@ -20,6 +20,13 @@ import FileCopyIcon from '@mui/icons-material/FileCopy'
 import SettingsIcon from '@mui/icons-material/Settings'
 import { useRouter } from 'next/navigation'
 
+const menuItems = [
+  { text: 'Workbench', icon: <DashboardIcon />, path: '/' },
+  { text: 'New Design', icon: <EditIcon />, path: '/design' },
+  { text: 'Templates', icon: <FileCopyIcon />, path: '/templates' },
+  { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
+]
+
 const NavigationBar = () => {
   const router = useRouter()
   const [mobileOpen, setMobileOpen] = React.useState(false)
@@ -28,17 +35,10 @@ const NavigationBar = () => {
     setMobileOpen(!mobileOpen)
   }
 
-  const menuItems = [
-    { text: '仪表板', icon: <DashboardIcon />, path: '/' },
-    { text: '设计器', icon: <EditIcon />, path: '/design' },
-    { text: '模板库', icon: <FileCopyIcon />, path: '/templates' },
-    { text: '设置', icon: <SettingsIcon />, path: '/settings' },
-  ]
-
   const drawer = (
     <Box sx={{ width: 250 }} role="presentation" onClick={handleDrawerToggle}>
       <Typography variant="h6" sx={{ padding: 2 }}>
-        电路设计系统
+        CircuitGPT
       </Typography>
       <List>
         {menuItems.map((item) => (
@@ -62,20 +62,22 @@ const NavigationBar = () => {
             edge="start"
             color="inherit"
             aria-label="menu"
-            sx={{ mr: 2 }}
+            sx={{ mr: 2, display: { sm: 'none' } }}
             onClick={handleDrawerToggle}
           >
             <MenuIcon />
           </IconButton>
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            AI 电路设计系统
+            CircuitGPT
           </Typography>
-          <Button color="inherit" onClick={() => router.push('/design')}>
-            新建设计
-          </Button>
-          <Button color="inherit" onClick={() => router.push('/settings')}>
-            登录
-          </Button>
+          <Box sx={{ display: { xs: 'none', sm: 'flex' }, gap: 1 }}>
+            <Button color="inherit" onClick={() => router.push('/')}>
+              Workbench
+            </Button>
+            <Button color="inherit" onClick={() => router.push('/design')}>
+              New Design
+            </Button>
+          </Box>
         </Toolbar>
       </AppBar>
       <Box component="nav">
@@ -83,9 +85,7 @@ const NavigationBar = () => {
           variant="temporary"
           open={mobileOpen}
           onClose={handleDrawerToggle}
-          ModalProps={{
-            keepMounted: true,
-          }}
+          ModalProps={{ keepMounted: true }}
           sx={{
             display: { xs: 'block', sm: 'none' },
             '& .MuiDrawer-paper': { boxSizing: 'border-box', width: 250 },

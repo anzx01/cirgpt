@@ -3,26 +3,22 @@ import { Box, Container, Typography } from '@mui/material'
 import NavigationBar from '../components/NavigationBar'
 import ThemeRegistry from '../components/ThemeRegistry'
 
-export default function RootLayout({
-  children,
-}) {
+export default function RootLayout({ children }) {
   return (
-    <html lang="zh-CN">
+    <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>AI Circuit Designer</title>
+        <title>CircuitGPT</title>
       </head>
       <body>
         <ThemeRegistry>
           <NavigationBar />
-          <main>
-            {children}
-          </main>
+          <main>{children}</main>
           <Box sx={{ bgcolor: 'primary.main', color: 'white', py: 3, mt: 4 }}>
             <Container maxWidth="lg">
-              <Typography variant="body1" align="center">
-                © 2026 CircuitGPT contributors. Licensed under ISC.
+              <Typography variant="body2" align="center">
+                Copyright 2026 CircuitGPT contributors. Licensed under ISC.
               </Typography>
             </Container>
           </Box>

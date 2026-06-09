@@ -34,4 +34,4 @@ ENV CELERY_BROKER_URL=redis://redis:6379
 ENV CELERY_RESULT_BACKEND=redis://redis:6379
 
 # 启动Celery Worker（默认命令，可在docker-compose中覆盖）
-CMD ["celery", "-A", "app.celery_config", "worker", "--loglevel=info"]
+CMD ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info"]

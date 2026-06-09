@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Dict, Any
 import logging
 
-from circuit_bert.model_loader import get_model
+from nlp.circuit_ir import parse_description_to_ir
 from nlp.circuit_generator import generate_circuit_design
 
 logger = logging.getLogger(__name__)
@@ -52,15 +52,15 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
     try:
         logger.info(f"Parsing: {request.description[:100]}...")
 
-        # Get model and parse requirements
-        model = get_model()
-        requirements = model.parse_requirements(request.description)
+        requirements = parse_description_to_ir(request.description)
 
         logger.info(f"Successfully parsed requirements")
         return ParseResponse(
             requirements=requirements,
-            success=True,
+            success=requirements.get("supported", False),
             message="Successfully parsed natural language description"
+            if requirements.get("supported", False)
+            else "Request is outside the v1 supported circuit set"
         )
 
     except Exception as e:
@@ -85,7 +85,9 @@ async def generate_circuit(request: GenerateRequest) -> GenerateResponse:
     try:
         logger.info("Generating circuit design")
 
-        # Generate netlist from requirements
+        # Compatibility endpoint. The KiCad-first v1 pipeline generates SPICE
+        # in the EDA service from CircuitIR, but older clients may still call
+        # this endpoint directly.
         netlist = generate_circuit_design(request.requirements)
 
         logger.info("Successfully generated netlist")

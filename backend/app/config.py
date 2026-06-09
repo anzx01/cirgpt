@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # 安全配置
     SECRET_KEY: str = Field(
-        ...,
+        "change-me-in-local-env",
         description="JWT signing key. Set this in .env or deployment secrets.",
     )
     ALGORITHM: str = "HS256"
@@ -36,6 +36,17 @@ class Settings(BaseSettings):
 
     # CORS配置 - 使用默认值，避免解析问题
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"release", "prod", "production", "false", "0", "no"}:
+                return False
+            if normalized in {"debug", "dev", "development", "true", "1", "yes"}:
+                return True
+        return value
 
     @property
     def CORS_ORIGINS_LIST(self) -> List[str]:

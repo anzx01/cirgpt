@@ -9,6 +9,7 @@ class Settings:
 
     # Tool paths
     KICAD_PATH = "kicad"
+    STORAGE_PATH = "./storage"
 
 
 settings = Settings()
