@@ -21,12 +21,22 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
+// 数据降采样，避免大数据量导致的性能问题
+function downsampleData(data, maxPoints = 1000) {
+  if (!data || data.length <= maxPoints) {
+    return data;
+  }
+
+  const step = Math.ceil(data.length / maxPoints);
+  return data.filter((_, index) => index % step === 0);
+}
+
 export default function SimulationViewer({ results }) {
   if (!results) {
     return (
       <Box sx={{ p: 4, textAlign: 'center' }}>
         <Alert severity="info">
-          No simulation results available yet. Please wait for generation to complete.
+          仿真结果尚未生成，请等待设计生成完成。
         </Alert>
       </Box>
     );
@@ -34,27 +44,39 @@ export default function SimulationViewer({ results }) {
 
   const { time, voltages, currents, summary } = results;
 
-  // Prepare chart data
+  // Prepare chart data with downsampling
   const chartData = useMemo(() => {
-    if (!time || !voltages) return [];
+    if (!time || !voltages) {
+      return [];
+    }
 
     const voltageData = voltages.output || voltages.Vout || [];
     const inputData = voltages.input || voltages.Vin || [];
     const currentData = currents?.total || [];
 
-    return time.map((t, i) => ({
+    // 检查数据是否为空
+    if (voltageData.length === 0) {
+      return [];
+    }
+
+    const rawData = time.map((t, i) => ({
       time: Number(t.toFixed(6)),
-      output: Number((voltageData[i] || 0).toFixed(3)),
+      output: voltageData[i] !== undefined ? Number((voltageData[i] || 0).toFixed(3)) : null,
       input: inputData[i] !== undefined ? Number((inputData[i] || 0).toFixed(3)) : null,
       current: currentData[i] !== undefined ? Number((currentData[i] * 1000).toFixed(3)) : null // Convert to mA
-    })).filter(point => point.time >= 0); // Filter valid points
+    })).filter(point => point.time >= 0 && point.output !== null);
+
+    // 降采样以提高性能
+    return downsampleData(rawData, 1000);
   }, [time, voltages, currents]);
 
   // Calculate statistics
   const stats = useMemo(() => {
-    if (!chartData.length) return null;
+    if (!chartData || chartData.length === 0) return null;
 
-    const outputVoltages = chartData.map(d => d.output);
+    const outputVoltages = chartData.map(d => d.output).filter(v => v !== null);
+    if (outputVoltages.length === 0) return null;
+
     const vMax = Math.max(...outputVoltages);
     const vMin = Math.min(...outputVoltages);
     const vAvg = outputVoltages.reduce((a, b) => a + b, 0) / outputVoltages.length;
@@ -68,12 +90,33 @@ export default function SimulationViewer({ results }) {
     };
   }, [chartData, summary]);
 
+  // 数据为空的情况
+  if (!chartData || chartData.length === 0) {
+    return (
+      <Box sx={{ p: 4 }}>
+        <Alert severity="warning">
+          仿真数据为空或格式不正确，无法显示波形图。请检查电路设计或重新生成。
+        </Alert>
+      </Box>
+    );
+  }
+
+  // 检查是否有输入电压和电流数据
+  const hasInputVoltage = chartData.some(d => d.input !== null);
+  const hasCurrent = chartData.some(d => d.current !== null);
+
   return (
     <Box>
       {/* Header */}
       <Typography variant="h6" fontWeight="bold" gutterBottom>
-        Circuit Simulation Results
+        电路仿真结果
       </Typography>
+
+      {chartData.length < (time?.length || 0) && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          数据点较多，已自动降采样至 {chartData.length} 个点以提高显示性能
+        </Alert>
+      )}
 
       {/* Statistics Cards */}
       {stats && (
@@ -82,7 +125,7 @@ export default function SimulationViewer({ results }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Max Voltage
+                  最大电压
                 </Typography>
                 <Typography variant="h6" color="primary">
                   {stats.vMax} V
@@ -94,7 +137,7 @@ export default function SimulationViewer({ results }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Min Voltage
+                  最小电压
                 </Typography>
                 <Typography variant="h6" color="primary">
                   {stats.vMin} V
@@ -106,7 +149,7 @@ export default function SimulationViewer({ results }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Avg Voltage
+                  平均电压
                 </Typography>
                 <Typography variant="h6" color="primary">
                   {stats.vAvg} V
@@ -118,7 +161,7 @@ export default function SimulationViewer({ results }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Peak-to-Peak
+                  峰峰值
                 </Typography>
                 <Typography variant="h6" color="primary">
                   {stats.vPeakToPeak} V
@@ -130,7 +173,7 @@ export default function SimulationViewer({ results }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Frequency
+                  频率
                 </Typography>
                 <Typography variant="h6" color="primary">
                   {stats.frequency} Hz
@@ -144,17 +187,17 @@ export default function SimulationViewer({ results }) {
       {/* Waveform Chart */}
       <Paper elevation={1} sx={{ p: 2, mb: 2 }}>
         <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
-          Voltage Waveforms
+          电压波形
         </Typography>
         <ResponsiveContainer width="100%" height={400}>
           <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="time"
-              label={{ value: 'Time (s)', position: 'insideBottomRight', offset: -5 }}
+              label={{ value: '时间 (s)', position: 'insideBottomRight', offset: -5 }}
             />
             <YAxis
-              label={{ value: 'Voltage (V)', angle: -90, position: 'insideLeft' }}
+              label={{ value: '电压 (V)', angle: -90, position: 'insideLeft' }}
             />
             <Tooltip />
             <Legend />
@@ -163,17 +206,19 @@ export default function SimulationViewer({ results }) {
               dataKey="output"
               stroke="#1976d2"
               strokeWidth={2}
-              name="Output Voltage"
+              name="输出电压"
               dot={false}
+              connectNulls
             />
-            {chartData.some(d => d.input !== null) && (
+            {hasInputVoltage && (
               <Line
                 type="monotone"
                 dataKey="input"
                 stroke="#ff9800"
                 strokeWidth={2}
-                name="Input Voltage"
+                name="输入电压"
                 dot={false}
+                connectNulls
               />
             )}
           </LineChart>
@@ -181,20 +226,20 @@ export default function SimulationViewer({ results }) {
       </Paper>
 
       {/* Current Waveform */}
-      {chartData.some(d => d.current !== null) && (
+      {hasCurrent && (
         <Paper elevation={1} sx={{ p: 2, mb: 2 }}>
           <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
-            Current Waveform
+            电流波形
           </Typography>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="time"
-                label={{ value: 'Time (s)', position: 'insideBottomRight', offset: -5 }}
+                label={{ value: '时间 (s)', position: 'insideBottomRight', offset: -5 }}
               />
               <YAxis
-                label={{ value: 'Current (mA)', angle: -90, position: 'insideLeft' }}
+                label={{ value: '电流 (mA)', angle: -90, position: 'insideLeft' }}
               />
               <Tooltip />
               <Legend />
@@ -203,8 +248,9 @@ export default function SimulationViewer({ results }) {
                 dataKey="current"
                 stroke="#4caf50"
                 strokeWidth={2}
-                name="Current"
+                name="电流"
                 dot={false}
+                connectNulls
               />
             </LineChart>
           </ResponsiveContainer>
@@ -214,8 +260,10 @@ export default function SimulationViewer({ results }) {
       {/* Analysis Type */}
       {results.analysis_type && (
         <Alert severity="info" sx={{ mt: 2 }}>
-          Analysis Type: <strong>{results.analysis_type}</strong> |
-          Simulation Time: <strong>{results.simulation_time}s</strong>
+          分析类型: <strong>{results.analysis_type}</strong>
+          {results.simulation_time && (
+            <> | 仿真时间: <strong>{results.simulation_time}s</strong></>
+          )}
         </Alert>
       )}
     </Box>

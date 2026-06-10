@@ -6,28 +6,29 @@ import {
   Paper,
   Typography,
   Alert,
-  Button,
   IconButton,
   Tooltip,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
+  Button,
   Grid
 } from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import DownloadIcon from '@mui/icons-material/Download';
+import { downloadImage } from '../lib/downloadUtils';
 
 export default function PcbViewer({ layout, image }) {
   const [zoom, setZoom] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
   const [imageError, setImageError] = useState(false);
 
-  // Debug: log the image prop
+  // Debug: log the image prop (仅开发环境)
   useEffect(() => {
-    if (image) {
+    if (image && process.env.NODE_ENV === 'development') {
       console.log('PCB Image data type:', typeof image);
       console.log('PCB Image length:', image?.length);
       console.log('PCB Image prefix:', image?.substring(0, 50));
@@ -38,7 +39,7 @@ export default function PcbViewer({ layout, image }) {
     return (
       <Box sx={{ p: 4, textAlign: 'center' }}>
         <Alert severity="info">
-          No PCB layout available yet. Please wait for generation to complete.
+          PCB布局尚未生成，请等待设计生成完成。
         </Alert>
       </Box>
     );
@@ -53,53 +54,32 @@ export default function PcbViewer({ layout, image }) {
   };
 
   const handleDownload = () => {
-    if (!image) return;
+    if (!image) {
+      setImageError(true);
+      return;
+    }
 
-    try {
-      let blob, filename;
-
-      // Check if it's SVG
-      if (image.trim().startsWith('<svg') || image.includes('<svg')) {
-        // Extract SVG content if wrapped in data URL
-        let svgContent = image;
-        if (image.startsWith('data:image/svg+xml,')) {
-          svgContent = decodeURIComponent(image.split(',')[1]);
-        } else if (image.startsWith('data:image')) {
-          svgContent = image.split(',')[1];
-        }
-
-        blob = new Blob([svgContent], { type: 'image/svg+xml' });
-        filename = 'pcb-layout.svg';
-      } else {
-        // Handle PNG/base64
-        let base64Data = image;
-        if (image.startsWith('data:image')) {
-          base64Data = image.split(',')[1];
-        }
-
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        blob = new Blob([byteArray], { type: 'image/png' });
-        filename = 'pcb-layout.png';
+    const result = downloadImage(image, 'pcb-layout');
+    if (!result.success) {
+      alert('下载失败，请重试');
+      if (process.env.NODE_ENV === 'development') {
+        console.error('下载错误:', result.error);
       }
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Download failed:', error);
-      alert('Failed to download PCB layout image');
     }
   };
+
+  // 键盘快捷键 Ctrl+S 下载
+  useEffect(() => {
+    const handleKeyPress = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+        event.preventDefault();
+        handleDownload();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [image]);
 
   // Handle different image formats (SVG, base64 PNG, data URLs)
   const getImageSrc = (imgData) => {
@@ -127,7 +107,7 @@ export default function PcbViewer({ layout, image }) {
         justifyContent: 'center',
         alignItems: 'center',
         overflow: 'auto',
-        height: fullscreen ? '80vh' : 600,
+        height: fullscreen ? '80vh' : { xs: 400, md: 600 },
         bgcolor: '#2e7d32', // PCB green color
         borderRadius: 1
       }}
@@ -138,8 +118,10 @@ export default function PcbViewer({ layout, image }) {
             src={getImageSrc(image)}
             alt="PCB Layout"
             onError={(e) => {
-              console.error('Image failed to load');
-              console.error('Image src:', getImageSrc(image)?.substring(0, 100));
+              if (process.env.NODE_ENV === 'development') {
+                console.error('图片加载失败');
+                console.error('图片源:', getImageSrc(image)?.substring(0, 100));
+              }
               setImageError(true);
               e.target.style.display = 'none';
             }}
@@ -154,25 +136,25 @@ export default function PcbViewer({ layout, image }) {
           {imageError && (
             <Box sx={{ color: 'white', p: 4, textAlign: 'center' }}>
               <Alert severity="error" sx={{ mb: 2 }}>
-                Failed to load PCB layout image
+                无法加载PCB布局图片。可能的原因：图片格式不支持或数据损坏。
               </Alert>
               <Typography variant="body2" sx={{ color: 'white' }}>
-                Check browser console for details
+                请尝试重新生成设计
               </Typography>
             </Box>
           )}
         </>
       ) : (
         <Box sx={{ color: 'white', p: 4 }}>
-          <Typography variant="h6">PCB Layout Visualization</Typography>
+          <Typography variant="h6">PCB布局可视化</Typography>
           <Typography variant="body2">
-            Board Dimensions: {layout?.dimensions?.width || 100}mm × {layout?.dimensions?.height || 80}mm
+            板子尺寸: {layout?.dimensions?.width || 100}mm × {layout?.dimensions?.height || 80}mm
           </Typography>
           <Typography variant="body2">
-            Layers: {layout?.layers || 2}
+            层数: {layout?.layers || 2}
           </Typography>
           <Typography variant="body2">
-            Components: {layout?.components?.length || 0}
+            元件数: {layout?.components?.length || 0}
           </Typography>
         </Box>
       )}
@@ -182,33 +164,39 @@ export default function PcbViewer({ layout, image }) {
   return (
     <Box>
       {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
         <Typography variant="h6" fontWeight="bold">
-          PCB Layout
+          PCB布局
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title="Zoom Out">
-            <IconButton onClick={handleZoomOut} disabled={zoom <= 0.4}>
-              <ZoomOutIcon />
-            </IconButton>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <Tooltip title="缩小">
+            <span>
+              <IconButton onClick={handleZoomOut} disabled={zoom <= 0.4} size="small">
+                <ZoomOutIcon />
+              </IconButton>
+            </span>
           </Tooltip>
-          <Typography variant="body2" sx={{ display: 'flex', alignItems: 'center', mx: 1 }}>
+          <Typography variant="body2" sx={{ minWidth: 50, textAlign: 'center' }}>
             {Math.round(zoom * 100)}%
           </Typography>
-          <Tooltip title="Zoom In">
-            <IconButton onClick={handleZoomIn} disabled={zoom >= 3}>
-              <ZoomInIcon />
-            </IconButton>
+          <Tooltip title="放大">
+            <span>
+              <IconButton onClick={handleZoomIn} disabled={zoom >= 3} size="small">
+                <ZoomInIcon />
+              </IconButton>
+            </span>
           </Tooltip>
-          <Tooltip title="Fullscreen">
-            <IconButton onClick={() => setFullscreen(true)}>
+          <Tooltip title="全屏查看">
+            <IconButton onClick={() => setFullscreen(true)} size="small">
               <FullscreenIcon />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Download">
-            <IconButton onClick={handleDownload} disabled={!image}>
-              <DownloadIcon />
-            </IconButton>
+          <Tooltip title="下载 (Ctrl+S)">
+            <span>
+              <IconButton onClick={handleDownload} disabled={!image} size="small">
+                <DownloadIcon />
+              </IconButton>
+            </span>
           </Tooltip>
         </Box>
       </Box>
@@ -222,36 +210,36 @@ export default function PcbViewer({ layout, image }) {
       {layout && (
         <Box sx={{ mt: 2 }}>
           <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} md={3}>
               <Typography variant="subtitle2" color="text.secondary">
-                Board Size
+                板子尺寸
               </Typography>
               <Typography variant="body1">
                 {layout.dimensions?.width || 100}mm × {layout.dimensions?.height || 80}mm
               </Typography>
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} md={3}>
               <Typography variant="subtitle2" color="text.secondary">
-                Layers
+                层数
               </Typography>
               <Typography variant="body1">
-                {layout.layers || 2} layers
+                {layout.layers || 2} 层
               </Typography>
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} md={3}>
               <Typography variant="subtitle2" color="text.secondary">
-                Components
+                元件数
               </Typography>
               <Typography variant="body1">
-                {layout.layout?.components?.length || layout.components?.length || 0} components
+                {layout.layout?.components?.length || layout.components?.length || 0} 个
               </Typography>
             </Grid>
-            <Grid item xs={12} md={6}>
+            <Grid item xs={6} md={3}>
               <Typography variant="subtitle2" color="text.secondary">
-                Tracks
+                走线数
               </Typography>
               <Typography variant="body1">
-                {layout.layout?.tracks?.length || 0} routes
+                {layout.layout?.tracks?.length || 0} 条
               </Typography>
             </Grid>
           </Grid>
@@ -264,21 +252,23 @@ export default function PcbViewer({ layout, image }) {
         onClose={() => setFullscreen(false)}
         maxWidth="xl"
         fullWidth
+        PaperProps={{
+          sx: { height: '90vh' }
+        }}
       >
-        <DialogTitle>PCB Layout - Fullscreen</DialogTitle>
+        <DialogTitle>PCB布局 - 全屏查看</DialogTitle>
         <DialogContent>
           {pcbImage}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setFullscreen(false)}>Close</Button>
+          <Button onClick={() => setFullscreen(false)}>关闭</Button>
         </DialogActions>
       </Dialog>
 
       {/* Info */}
       <Box sx={{ mt: 2 }}>
         <Typography variant="body2" color="text.secondary">
-          💡 Tip: Green areas represent copper traces. Components are shown as black rectangles.
-          Use zoom buttons for better visibility.
+          💡 提示：绿色区域代表铜走线，元件以黑色矩形显示。使用缩放按钮获得更好的视觉效果（支持Ctrl+S快捷下载）。
         </Typography>
       </Box>
     </Box>

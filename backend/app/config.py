@@ -18,8 +18,8 @@ class Settings(BaseSettings):
 
     # 安全配置
     SECRET_KEY: str = Field(
-        "change-me-in-local-env",
-        description="JWT signing key. Set this in .env or deployment secrets.",
+        ...,  # 必填字段，没有默认值
+        description="JWT signing key. MUST be set in .env file or environment variable.",
     )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
@@ -36,6 +36,38 @@ class Settings(BaseSettings):
 
     # CORS配置 - 使用默认值，避免解析问题
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
+
+    @field_validator("SECRET_KEY", mode="after")
+    @classmethod
+    def validate_secret_key(cls, value):
+        """验证SECRET_KEY的安全性"""
+        if not value:
+            raise ValueError(
+                "SECRET_KEY is required! Set it in .env file or environment variable."
+            )
+
+        # 检查是否使用了不安全的默认值
+        insecure_defaults = [
+            "change-me",
+            "change-me-in-local-env",
+            "secret",
+            "secretkey",
+            "mysecret",
+            "password",
+            "admin"
+        ]
+
+        if value.lower() in insecure_defaults or len(value) < 32:
+            raise ValueError(
+                f"SECRET_KEY is insecure! It must be:\n"
+                f"  - At least 32 characters long\n"
+                f"  - Not a common/default value\n"
+                f"  - Randomly generated\n"
+                f"Current length: {len(value)} characters\n"
+                f"Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
+
+        return value
 
     @field_validator("DEBUG", mode="before")
     @classmethod
@@ -55,4 +87,11 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
         return self.CORS_ORIGINS
 
-settings = Settings()
+# 实例化配置
+try:
+    settings = Settings()
+except Exception as e:
+    print(f"\n{'='*70}")
+    print(f"配置错误: {str(e)}")
+    print(f"{'='*70}\n")
+    raise

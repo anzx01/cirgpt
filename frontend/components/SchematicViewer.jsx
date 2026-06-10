@@ -6,7 +6,6 @@ import {
   Paper,
   Typography,
   Alert,
-  Button,
   IconButton,
   Tooltip
 } from '@mui/material';
@@ -14,6 +13,7 @@ import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import DownloadIcon from '@mui/icons-material/Download';
 import { SVG } from '@svgdotjs/svg.js';
+import { downloadSVG } from '../lib/downloadUtils';
 
 export default function SchematicViewer({ svg }) {
   const containerRef = useRef(null);
@@ -39,9 +39,14 @@ export default function SchematicViewer({ svg }) {
       // Set initial view
       svgInstanceRef.current.scale(zoom);
 
+      setError(null); // 清除错误状态
     } catch (err) {
-      setError('Failed to render schematic');
-      console.error(err);
+      const errorMessage = '无法渲染原理图。可能的原因：SVG格式不正确或数据损坏。请尝试重新生成设计。';
+      setError(errorMessage);
+
+      if (process.env.NODE_ENV === 'development') {
+        console.error('原理图渲染错误:', err);
+      }
     }
   }, [svg, zoom]);
 
@@ -54,24 +59,35 @@ export default function SchematicViewer({ svg }) {
   };
 
   const handleDownload = () => {
-    if (!svg) return;
+    if (!svg) {
+      setError('没有可下载的原理图数据');
+      return;
+    }
 
-    const blob = new Blob([svg], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'schematic.svg';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const result = downloadSVG(svg, 'schematic.svg');
+    if (!result.success) {
+      setError('下载失败，请重试');
+    }
   };
+
+  // 键盘快捷键 Ctrl+S 下载
+  useEffect(() => {
+    const handleKeyPress = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+        event.preventDefault();
+        handleDownload();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [svg]);
 
   if (!svg) {
     return (
       <Box sx={{ p: 4, textAlign: 'center' }}>
         <Alert severity="info">
-          No schematic available yet. Please wait for generation to complete.
+          原理图尚未生成，请等待设计生成完成。
         </Alert>
       </Box>
     );
@@ -79,7 +95,11 @@ export default function SchematicViewer({ svg }) {
 
   if (error) {
     return (
-      <Alert severity="error">{error}</Alert>
+      <Box sx={{ p: 4 }}>
+        <Alert severity="error" onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      </Box>
     );
   }
 
@@ -88,24 +108,28 @@ export default function SchematicViewer({ svg }) {
       {/* Toolbar */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h6" fontWeight="bold">
-          Circuit Schematic
+          电路原理图
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title="Zoom Out">
-            <IconButton onClick={handleZoomOut} disabled={zoom <= 0.4}>
-              <ZoomOutIcon />
-            </IconButton>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <Tooltip title="缩小">
+            <span>
+              <IconButton onClick={handleZoomOut} disabled={zoom <= 0.4} size="small">
+                <ZoomOutIcon />
+              </IconButton>
+            </span>
           </Tooltip>
-          <Typography variant="body2" sx={{ display: 'flex', alignItems: 'center', mx: 1 }}>
+          <Typography variant="body2" sx={{ minWidth: 50, textAlign: 'center' }}>
             {Math.round(zoom * 100)}%
           </Typography>
-          <Tooltip title="Zoom In">
-            <IconButton onClick={handleZoomIn} disabled={zoom >= 3}>
-              <ZoomInIcon />
-            </IconButton>
+          <Tooltip title="放大">
+            <span>
+              <IconButton onClick={handleZoomIn} disabled={zoom >= 3} size="small">
+                <ZoomInIcon />
+              </IconButton>
+            </span>
           </Tooltip>
-          <Tooltip title="Download SVG">
-            <IconButton onClick={handleDownload}>
+          <Tooltip title="下载SVG (Ctrl+S)">
+            <IconButton onClick={handleDownload} size="small">
               <DownloadIcon />
             </IconButton>
           </Tooltip>
@@ -118,7 +142,7 @@ export default function SchematicViewer({ svg }) {
         sx={{
           p: 2,
           bgcolor: 'white',
-          height: 600,
+          height: { xs: 400, md: 600 },
           overflow: 'auto',
           border: '1px solid #e0e0e0',
           borderRadius: 1
@@ -129,7 +153,7 @@ export default function SchematicViewer({ svg }) {
           sx={{
             width: '100%',
             height: '100%',
-            minHeight: 500,
+            minHeight: { xs: 350, md: 500 },
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center'
@@ -140,7 +164,7 @@ export default function SchematicViewer({ svg }) {
       {/* Info */}
       <Box sx={{ mt: 2 }}>
         <Typography variant="body2" color="text.secondary">
-          💡 Tip: Use the zoom buttons to zoom in/out. Click download to save the schematic as SVG.
+          💡 提示：使用缩放按钮调整视图大小，点击下载按钮保存为SVG文件（支持Ctrl+S快捷键）。
         </Typography>
       </Box>
     </Box>

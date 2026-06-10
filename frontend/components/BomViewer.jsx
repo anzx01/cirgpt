@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Box,
   Paper,
@@ -15,17 +15,105 @@ import {
   Alert,
   Grid,
   Card,
-  CardContent
+  CardContent,
+  IconButton,
+  Collapse,
+  useMediaQuery,
+  useTheme
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
-import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { downloadFile } from '../lib/downloadUtils';
+
+// 移动端元件卡片组件
+function ComponentCard({ entry, index }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const formatPrice = (price) => {
+    return typeof price === 'number' ? `$${price.toFixed(4)}` : price || 'N/A';
+  };
+
+  return (
+    <Card sx={{ mb: 1 }}>
+      <CardContent>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box>
+            <Typography variant="subtitle1" fontWeight="bold">
+              {entry.designator}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {entry.component_type} - {entry.value}
+            </Typography>
+          </Box>
+          <Box sx={{ textAlign: 'right' }}>
+            <Typography variant="body2" color="primary" fontWeight="bold">
+              x{entry.quantity}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {formatPrice(entry.total_price)}
+            </Typography>
+          </Box>
+        </Box>
+
+        <IconButton
+          onClick={() => setExpanded(!expanded)}
+          sx={{
+            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 0.3s',
+            mt: 1
+          }}
+          size="small"
+        >
+          <ExpandMoreIcon />
+        </IconButton>
+
+        <Collapse in={expanded}>
+          <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+            <Grid container spacing={1}>
+              <Grid item xs={6}>
+                <Typography variant="caption" color="text.secondary">封装</Typography>
+                <Typography variant="body2">{entry.footprint}</Typography>
+              </Grid>
+              <Grid item xs={6}>
+                <Typography variant="caption" color="text.secondary">单价</Typography>
+                <Typography variant="body2">{formatPrice(entry.unit_price)}</Typography>
+              </Grid>
+              <Grid item xs={6}>
+                <Typography variant="caption" color="text.secondary">供应商</Typography>
+                <Typography variant="body2">{entry.supplier}</Typography>
+              </Grid>
+              <Grid item xs={6}>
+                <Typography variant="caption" color="text.secondary">料号</Typography>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontFamily: 'monospace',
+                    fontSize: '0.7rem',
+                    bgcolor: 'grey.100',
+                    px: 0.5,
+                    borderRadius: 0.5
+                  }}
+                >
+                  {entry.part_number}
+                </Typography>
+              </Grid>
+            </Grid>
+          </Box>
+        </Collapse>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function BomViewer({ bom }) {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+
   if (!bom) {
     return (
       <Box sx={{ p: 4, textAlign: 'center' }}>
         <Alert severity="info">
-          No BOM available yet. Please wait for generation to complete.
+          物料清单(BOM)尚未生成，请等待设计生成完成。
         </Alert>
       </Box>
     );
@@ -34,37 +122,39 @@ export default function BomViewer({ bom }) {
   const { entries, summary } = bom;
 
   const handleDownloadCSV = () => {
-    if (!bom.csv) return;
+    if (!bom.csv) {
+      alert('CSV数据不可用');
+      return;
+    }
 
-    const blob = new Blob([bom.csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `bom_${bom.design_name || 'circuit'}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const result = downloadFile(bom.csv, `bom_${bom.design_name || 'circuit'}.csv`, 'text/csv');
+    if (!result.success) {
+      alert('下载失败，请重试');
+    }
   };
 
   const formatPrice = (price) => {
-    return typeof price === 'number' ? `$${price.toFixed(4)}` : price;
+    return typeof price === 'number' ? `$${price.toFixed(4)}` : price || 'N/A';
   };
+
+  // 检查数据有效性
+  const hasValidEntries = entries && Array.isArray(entries) && entries.length > 0;
 
   return (
     <Box>
       {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
         <Typography variant="h6" fontWeight="bold">
-          Bill of Materials
+          物料清单 (BOM)
         </Typography>
         <Button
           variant="contained"
           startIcon={<DownloadIcon />}
           onClick={handleDownloadCSV}
           disabled={!bom.csv}
+          size={isMobile ? 'small' : 'medium'}
         >
-          Download CSV
+          下载CSV
         </Button>
       </Box>
 
@@ -75,7 +165,7 @@ export default function BomViewer({ bom }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Total Components
+                  元件总数
                 </Typography>
                 <Typography variant="h4" color="primary">
                   {summary.total_components || 0}
@@ -87,7 +177,7 @@ export default function BomViewer({ bom }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Unique Components
+                  唯一元件数
                 </Typography>
                 <Typography variant="h4" color="primary">
                   {summary.unique_components || 0}
@@ -99,10 +189,10 @@ export default function BomViewer({ bom }) {
             <Card>
               <CardContent>
                 <Typography variant="caption" color="text.secondary">
-                  Total Cost
+                  总成本
                 </Typography>
                 <Typography variant="h4" color="success.main">
-                  ${summary.total_cost?.toFixed(2) || '0.00'}
+                  ${(typeof summary.total_cost === 'number' ? summary.total_cost : 0).toFixed(2)}
                 </Typography>
               </CardContent>
             </Card>
@@ -110,32 +200,38 @@ export default function BomViewer({ bom }) {
         </Grid>
       )}
 
-      {/* BOM Table */}
-      <Paper elevation={1} sx={{ mb: 2 }}>
-        <TableContainer sx={{ maxHeight: 440 }}>
-          <Table stickyHeader>
-            <TableHead>
-              <TableRow>
-                <TableCell>Designator</TableCell>
-                <TableCell>Quantity</TableCell>
-                <TableCell>Component Type</TableCell>
-                <TableCell>Value</TableCell>
-                <TableCell>Footprint</TableCell>
-                <TableCell align="right">Unit Price</TableCell>
-                <TableCell align="right">Total Price</TableCell>
-                <TableCell>Supplier</TableCell>
-                <TableCell>Part Number</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {entries && entries.length > 0 ? (
-                entries.map((entry, index) => (
+      {!hasValidEntries && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          物料清单数据为空或格式不正确
+        </Alert>
+      )}
+
+      {/* BOM Table - 桌面端 */}
+      {hasValidEntries && !isMobile && (
+        <Paper elevation={1} sx={{ mb: 2 }}>
+          <TableContainer sx={{ maxHeight: 440 }}>
+            <Table stickyHeader size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>位号</TableCell>
+                  <TableCell>数量</TableCell>
+                  <TableCell>元件类型</TableCell>
+                  <TableCell>值</TableCell>
+                  <TableCell>封装</TableCell>
+                  <TableCell align="right">单价</TableCell>
+                  <TableCell align="right">总价</TableCell>
+                  <TableCell>供应商</TableCell>
+                  <TableCell>料号</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {entries.map((entry, index) => (
                   <TableRow
                     key={index}
                     hover
                     sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
                   >
-                    <TableCell component="th" scope="row">
+                    <TableCell component="th" scope="row" sx={{ fontWeight: 'bold' }}>
                       {entry.designator}
                     </TableCell>
                     <TableCell>{entry.quantity}</TableCell>
@@ -162,26 +258,27 @@ export default function BomViewer({ bom }) {
                       </Typography>
                     </TableCell>
                   </TableRow>
-                ))
-              ) : (
-                <TableRow>
-                  <TableCell colSpan={9} align="center">
-                    <Typography variant="body2" color="text.secondary">
-                      No components found
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Paper>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
+
+      {/* BOM Cards - 移动端 */}
+      {hasValidEntries && isMobile && (
+        <Box sx={{ mb: 2 }}>
+          {entries.map((entry, index) => (
+            <ComponentCard key={index} entry={entry} index={index} />
+          ))}
+        </Box>
+      )}
 
       {/* Cost Breakdown */}
-      {entries && entries.length > 0 && (
+      {hasValidEntries && (
         <Paper elevation={1} sx={{ p: 2 }}>
           <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
-            Cost Breakdown by Component Type
+            按元件类型的成本分解
           </Typography>
           <Grid container spacing={1}>
             {Object.entries(
@@ -190,8 +287,8 @@ export default function BomViewer({ bom }) {
                 if (!acc[type]) {
                   acc[type] = { count: 0, cost: 0 };
                 }
-                acc[type].count += entry.quantity;
-                acc[type].cost += entry.total_price;
+                acc[type].count += entry.quantity || 0;
+                acc[type].cost += (typeof entry.total_price === 'number' ? entry.total_price : 0);
                 return acc;
               }, {})
             ).map(([type, data]) => (
@@ -201,7 +298,7 @@ export default function BomViewer({ bom }) {
                     {type}
                   </Typography>
                   <Typography variant="body2" fontWeight="bold">
-                    {data.count} pcs / ${data.cost.toFixed(2)}
+                    {data.count} 个 / ${data.cost.toFixed(2)}
                   </Typography>
                 </Box>
               </Grid>
@@ -214,8 +311,7 @@ export default function BomViewer({ bom }) {
       <Box sx={{ mt: 2 }}>
         <Alert severity="info">
           <Typography variant="body2">
-            💡 <strong>Tip:</strong> Download the CSV to import into your preferred procurement system.
-            Prices are estimates based on generic components. Actual prices may vary by supplier.
+            💡 <strong>提示:</strong> 下载CSV文件以导入到您的采购系统。价格是基于通用元件的估算，实际价格可能因供应商而异。
           </Typography>
         </Alert>
       </Box>
