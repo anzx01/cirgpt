@@ -57,6 +57,8 @@ def generate_spice_netlist(ir: Dict[str, Any]) -> str:
     circuit_type = ir.get("circuit_type")
     if circuit_type == "led_current_limiter":
         return _led_netlist(ir)
+    if circuit_type == "capacitor_discharge_led":
+        return _capacitor_discharge_led_netlist(ir)
     if circuit_type == "rc_low_pass_filter":
         return _rc_netlist(ir)
     if circuit_type == "555_timer_blinker":
@@ -86,6 +88,39 @@ def _led_netlist(ir: Dict[str, Any]) -> str:
         ".model LED D(Is=1e-12 Rs=10 N=1.8 Cjo=10p Vj=2.0)",
         ".op",
         ".tran 1m 100m",
+        ".end",
+    ])
+    return "\n".join(lines)
+
+
+def _capacitor_discharge_led_netlist(ir: Dict[str, Any]) -> str:
+    supply = _value(_role(ir, "supply"), 5.0)
+    charge_resistor = _value(_role(ir, "charge_resistor"), 47.0)
+    discharge_resistor = _value(_role(ir, "discharge_resistor"), 10_000.0)
+    capacitor = _value(_role(ir, "storage_capacitor"), 100e-6)
+    rled = _value(_role(ir, "led_resistor"), 330.0)
+
+    constraints = ir.get("constraints", {})
+    tau = float(constraints.get("time_constant_s", discharge_resistor * capacitor))
+    press_time = float(constraints.get("button_press_s", max(0.2, min(tau * 0.5, 1.0))))
+    duration = max(press_time + tau * 5.0, 2.0)
+    step = max(min(tau / 100.0, 0.01), 1e-4)
+    switch_threshold = max(supply / 2.0, 0.1)
+
+    lines = _header(ir)
+    lines.extend([
+        "* Momentary charge, then RC discharge LED fade preview",
+        f"V1 VCC 0 DC {supply:g}",
+        f"VCTRL CTRL 0 PULSE(0 {supply:g} 0 1m 1m {press_time:g} {duration:g})",
+        "S1 VCC CHARGE CTRL 0 SW_PUSH",
+        f".model SW_PUSH SW(Ron=0.1 Roff=100Meg Vt={switch_threshold:g} Vh=0.2)",
+        f"RCHG CHARGE CAP {_spice_value(charge_resistor, 'ohm')}",
+        f"C1 CAP 0 {_spice_value(capacitor, 'F')} IC=0",
+        f"RDIS CAP 0 {_spice_value(discharge_resistor, 'ohm')}",
+        f"RLED CAP LED_A {_spice_value(rled, 'ohm')}",
+        "D1 LED_A 0 LED",
+        ".model LED D(Is=1e-12 Rs=10 N=1.8 Cjo=10p Vj=2.0)",
+        f".tran {step:g} {duration:g} uic",
         ".end",
     ])
     return "\n".join(lines)

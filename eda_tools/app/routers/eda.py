@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from spice_parser import SPICEParser
 from svg_generator import SVGSchematicGenerator
+from ir_schematic import generate_ir_schematic_svg
+from kicad_artifacts import detect_kicad_toolchain, generate_kicad_artifacts
 from pyspice.simulator import simulate_circuit
 from kicad.pcb_generator import generate_pcb
 from bom.bom_generator import generate_bom
@@ -26,6 +28,7 @@ router = APIRouter(prefix="/eda", tags=["EDA"])
 class SchematicRequest(BaseModel):
     """Request for schematic generation"""
     netlist: str
+    circuit_ir: Optional[Dict[str, Any]] = None
 
 
 class NetlistRequest(BaseModel):
@@ -90,6 +93,52 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
     try:
         logger.info("Generating schematic with industrial-grade pipeline")
 
+        if request.circuit_ir:
+            try:
+                kicad_result = generate_kicad_artifacts(request.circuit_ir)
+                if kicad_result.get("svg"):
+                    summary = {
+                        "title": request.circuit_ir.get("title", "Circuit"),
+                        "components": len(request.circuit_ir.get("components", [])),
+                        "nets": len(request.circuit_ir.get("nets", [])),
+                        "algorithm": "SKiDL circuit capture + KiCad CLI SVG export",
+                        "generator": kicad_result.get("generator", "skidl+kicad-cli"),
+                        "erc": kicad_result.get("erc_summary"),
+                    }
+                    return {
+                        "success": True,
+                        "message": "KiCad/SKiDL schematic generated",
+                        "svg": kicad_result["svg"],
+                        "summary": summary,
+                        "generator": kicad_result.get("generator"),
+                        "kicad_schematic": kicad_result.get("kicad_schematic"),
+                        "skidl_netlist": kicad_result.get("skidl_netlist"),
+                        "erc_json": kicad_result.get("erc_json"),
+                        "erc_summary": kicad_result.get("erc_summary"),
+                        "toolchain": kicad_result.get("toolchain"),
+                        "kicad_paths": kicad_result.get("paths"),
+                    }
+            except Exception as e:
+                logger.warning(f"KiCad/SKiDL schematic generation failed, falling back: {e}")
+
+            svg = generate_ir_schematic_svg(request.circuit_ir)
+            if svg:
+                summary = {
+                    "title": request.circuit_ir.get("title", "Circuit"),
+                    "components": len(request.circuit_ir.get("components", [])),
+                    "nets": len(request.circuit_ir.get("nets", [])),
+                    "algorithm": "CircuitIR dedicated schematic renderer",
+                    "generator": "circuit-ir-svg-fallback",
+                }
+                return {
+                    "success": True,
+                    "message": "CircuitIR fallback schematic generated",
+                    "svg": svg,
+                    "summary": summary,
+                    "generator": "circuit-ir-svg-fallback",
+                    "warnings": ["KiCad/SKiDL generation failed; returned SVG fallback."],
+                }
+
         # Step 1: Parse SPICE netlist
         parser = SPICEParser()
         spice_data = parser.parse(request.netlist)
@@ -110,8 +159,10 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
 
         return {
             "success": True,
+            "message": "SPICE fallback schematic generated",
             "svg": svg,
-            "summary": summary
+            "summary": summary,
+            "generator": "spice-svg-fallback",
         }
 
     except Exception as e:
@@ -229,13 +280,16 @@ async def list_eda_tools() -> Dict[str, Any]:
         List of tools
     """
     try:
+        kicad_toolchain = detect_kicad_toolchain()
+        kicad_cli = kicad_toolchain.get("kicad_cli", {})
+        skidl = kicad_toolchain.get("skidl", {})
         return {
             "tools": [
                 {
                     "name": "SKiDL",
-                    "version": "2.0",
-                    "description": "Schematic generation",
-                    "status": "active"
+                    "version": skidl.get("version", "unknown"),
+                    "description": "Schematic capture and KiCad netlist generation",
+                    "status": "active" if skidl.get("status") == "ok" else "degraded"
                 },
                 {
                     "name": "ngspice",
@@ -245,9 +299,9 @@ async def list_eda_tools() -> Dict[str, Any]:
                 },
                 {
                     "name": "KiCad",
-                    "version": "7.0",
-                    "description": "PCB layout generation",
-                    "status": "active"
+                    "version": kicad_cli.get("version", "unknown"),
+                    "description": "KiCad CLI schematic SVG export and ERC",
+                    "status": "active" if kicad_cli.get("status") == "ok" else "degraded"
                 },
                 {
                     "name": "BOM Generator",

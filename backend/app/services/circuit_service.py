@@ -178,7 +178,7 @@ class CircuitService:
             # Step 3: Generate schematic
             await self._update_progress(progress_callback, design_id,
                                        "Generating schematic", 50)
-            schematic_result = await self._generate_schematic(netlist)
+            schematic_result = await self._generate_schematic(netlist, circuit_ir)
 
             # Step 4: Run simulation
             await self._update_progress(progress_callback, design_id,
@@ -195,10 +195,18 @@ class CircuitService:
                                        "Generating bill of materials", 95)
             bom_result = await self._generate_bom(netlist, f"Circuit_{design_id}")
 
-            validation = self._build_validation_report(circuit_ir, simulation_result, pcb_result)
+            validation = self._build_validation_report(
+                circuit_ir,
+                simulation_result,
+                pcb_result,
+                schematic_result,
+            )
             artifacts = self._build_artifacts(
                 netlist=netlist,
                 schematic_svg=schematic_result.get("svg"),
+                kicad_schematic=schematic_result.get("kicad_schematic"),
+                skidl_netlist=schematic_result.get("skidl_netlist"),
+                erc_json=schematic_result.get("erc_json"),
                 simulation_result=simulation_result.get("results"),
                 pcb_layout=pcb_result.get("layout"),
                 bom=bom_result.get("bom"),
@@ -300,7 +308,7 @@ class CircuitService:
         data = response.json()
         return data["netlist"]
 
-    async def _generate_schematic(self, netlist: str) -> Dict[str, Any]:
+    async def _generate_schematic(self, netlist: str, circuit_ir: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate schematic from netlist using EDA service
 
@@ -315,7 +323,7 @@ class CircuitService:
         http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/schematic",
-            json={"netlist": netlist}
+            json={"netlist": netlist, "circuit_ir": circuit_ir}
         )
 
         if response.status_code != 200:
@@ -430,18 +438,31 @@ class CircuitService:
         circuit_ir: Dict[str, Any],
         simulation_result: Dict[str, Any],
         pcb_result: Dict[str, Any],
+        schematic_result: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Build an explicit validation/degraded-capability report."""
         simulation = simulation_result.get("results", {})
         pcb_layout = pcb_result.get("layout", {})
+        erc_summary = schematic_result.get("erc_summary") or {}
 
         warnings = list(circuit_ir.get("warnings") or [])
+        warnings.extend(schematic_result.get("warnings") or [])
+        if schematic_result.get("generator") != "skidl+kicad-cli":
+            warnings.append("Schematic used fallback renderer instead of SKiDL/KiCad.")
+        if erc_summary.get("errors"):
+            warnings.append(f"KiCad ERC reported {erc_summary.get('errors')} error(s).")
+        if erc_summary.get("warnings"):
+            warnings.append(f"KiCad ERC reported {erc_summary.get('warnings')} warning(s).")
         if simulation.get("message"):
             warnings.append(simulation["message"])
         warnings.extend(pcb_layout.get("warnings") or [])
 
         status = "passed"
         if simulation.get("status") == "degraded" or pcb_layout.get("manufacturing_status") == "experimental_preview_only":
+            status = "degraded"
+        if schematic_result.get("generator") != "skidl+kicad-cli":
+            status = "degraded"
+        if erc_summary.get("status") in {"warning", "failed"}:
             status = "degraded"
         if simulation.get("status") == "failed":
             status = "failed"
@@ -452,10 +473,14 @@ class CircuitService:
             "checks": {
                 "circuit_ir_supported": circuit_ir.get("supported", False),
                 "spice_netlist_generated": True,
+                "schematic_generator": schematic_result.get("generator", "unknown"),
+                "kicad_schematic_generated": bool(schematic_result.get("kicad_schematic")),
+                "kicad_erc_status": erc_summary.get("status", "not_run"),
                 "simulation_status": simulation.get("status", "unknown"),
                 "pcb_status": pcb_layout.get("manufacturing_status", "preview"),
                 "gerber_export": "disabled_in_v1",
             },
+            "erc": erc_summary,
             "warnings": [warning for warning in warnings if warning],
             "errors": [] if status != "failed" else [simulation.get("error", "Simulation failed")],
         }
@@ -464,6 +489,9 @@ class CircuitService:
         self,
         netlist: str,
         schematic_svg: Optional[str],
+        kicad_schematic: Optional[str],
+        skidl_netlist: Optional[str],
+        erc_json: Optional[str],
         simulation_result: Optional[Dict[str, Any]],
         pcb_layout: Optional[Dict[str, Any]],
         bom: Optional[Dict[str, Any]],
@@ -488,6 +516,24 @@ class CircuitService:
                 "filename": "schematic.svg",
                 "media_type": "image/svg+xml",
                 "content": schematic_svg,
+            }
+        if kicad_schematic:
+            artifacts["kicad_schematic"] = {
+                "filename": "schematic.kicad_sch",
+                "media_type": "application/octet-stream",
+                "content": kicad_schematic,
+            }
+        if skidl_netlist:
+            artifacts["skidl_netlist"] = {
+                "filename": "schematic.net",
+                "media_type": "text/plain",
+                "content": skidl_netlist,
+            }
+        if erc_json:
+            artifacts["erc_json"] = {
+                "filename": "erc.json",
+                "media_type": "application/json",
+                "content": erc_json,
             }
         if bom and bom.get("csv"):
             artifacts["bom_csv"] = {

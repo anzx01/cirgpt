@@ -24,6 +24,7 @@ class SchematicRequest(BaseModel):
     """Schematic generation request"""
     netlist: str
     format: str = "svg"
+    circuit_ir: Optional[Dict[str, Any]] = None
 
 
 class SchematicResponse(BaseModel):
@@ -32,3 +33,10 @@ class SchematicResponse(BaseModel):
     message: str
     svg: Optional[str] = None
     summary: Optional[Dict[str, Any]] = None
+    generator: Optional[str] = None
+    kicad_schematic: Optional[str] = None
+    skidl_netlist: Optional[str] = None
+    erc_json: Optional[str] = None
+    erc_summary: Optional[Dict[str, Any]] = None
+    toolchain: Optional[Dict[str, Any]] = None
+    kicad_paths: Optional[Dict[str, Any]] = None

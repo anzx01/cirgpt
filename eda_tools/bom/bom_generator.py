@@ -23,6 +23,7 @@ class BOMGenerator:
             "LED": 0.15,
             "Transistor": 0.20,
             "IC": 0.50,
+            "Switch": 0.30,
             "Voltage Source": 0.00,
             "Current Source": 0.00
         }
@@ -97,8 +98,13 @@ class BOMGenerator:
             parts = line.split()
             if len(parts) >= 3:
                 comp_name = parts[0]
-                nodes = parts[1:-1]
-                value = parts[-1]
+                prefix = comp_name[0].upper()
+                value_index = self._value_index(prefix, parts)
+                if value_index is None:
+                    continue
+                value = parts[value_index]
+                if self._is_nonphysical_source(comp_name, prefix, value):
+                    continue
 
                 comp_type = self._get_component_type(comp_name, value)
 
@@ -111,6 +117,29 @@ class BOMGenerator:
                 components.append(component)
 
         return components
+
+    def _is_nonphysical_source(self, comp_name: str, prefix: str, value: str) -> bool:
+        """Skip behavioral sources that exist only to drive simulations."""
+        return prefix in {"V", "I"} and (
+            comp_name.upper() in {"VCTRL", "VOSC"}
+            or value.upper().startswith(("PULSE", "SIN", "EXP", "PWL", "SFFM"))
+        )
+
+    def _value_index(self, prefix: str, parts: List[str]) -> int:
+        """Return the token index that represents the purchasable part value."""
+        if prefix in {"R", "L", "C", "D"} and len(parts) >= 4:
+            return 3
+        if prefix in {"V", "I"} and len(parts) >= 4:
+            if len(parts) >= 5 and parts[3].upper() in {"DC", "AC", "PULSE", "SIN", "EXP", "PWL", "SFFM"}:
+                return 4
+            return 3
+        if prefix == "S" and len(parts) >= 6:
+            return 5
+        if prefix in {"Q", "M", "J"} and len(parts) >= 5:
+            return 4
+        if prefix in {"U", "X"} and len(parts) >= 2:
+            return len(parts) - 1
+        return len(parts) - 1
 
     def _get_component_type(self, comp_name: str, value: str) -> str:
         """
@@ -131,6 +160,7 @@ class BOMGenerator:
             "L": "Inductor",
             "D": "Diode",
             "Q": "Transistor",
+            "S": "Switch",
             "U": "IC",
             "V": "Voltage Source",
             "I": "Current Source"
@@ -257,6 +287,7 @@ class BOMGenerator:
             "LED": "THT, 3mm, Radial",
             "Transistor": "THT, TO-92",
             "IC": "THT, DIP-8",
+            "Switch": "THT, Momentary Pushbutton",
             "Voltage Source": "N/A",
             "Current Source": "N/A"
         }

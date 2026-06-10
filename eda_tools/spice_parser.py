@@ -70,6 +70,11 @@ class SPICEParser:
                 self.comments.append(comment)
                 continue
 
+            # Skip SPICE control/model directives. They inform simulation but
+            # are not schematic components.
+            if line.startswith('.'):
+                continue
+
             # Handle continuation lines
             if line.startswith('+'):
                 if self.components:
@@ -125,6 +130,7 @@ class SPICEParser:
 
         # Parse based on component type
         # Two-terminal components: R, L, C, D -> NAME node1 node2 value [params]
+        # Voltage-controlled switches: S -> NAME n+ n- nc+ nc- model [params]
         # Voltage sources: V -> NAME node1 node2 TYPE value [params]
         # Current sources: I -> NAME node1 node2 TYPE value [params]
         # Transistors: Q -> NAME c b e model [params]
@@ -151,6 +157,21 @@ class SPICEParser:
                     nodes.append(parts[i])
                     i += 1
                 if i < len(parts):
+                    value = parts[i]
+                    i += 1
+
+        elif comp_type == 'S':
+            if len(parts) >= 6:
+                nodes = parts[1:5]
+                model = parts[5]
+                value = parts[5]
+                i = 6
+            else:
+                while i < len(parts) and len(nodes) < 4:
+                    nodes.append(parts[i])
+                    i += 1
+                if i < len(parts):
+                    model = parts[i]
                     value = parts[i]
                     i += 1
 

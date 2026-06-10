@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 SUPPORTED_TYPES = [
     "led_current_limiter",
+    "capacitor_discharge_led",
     "rc_low_pass_filter",
     "555_timer_blinker",
     "opamp_inverting",
@@ -27,11 +28,11 @@ def _first_float(pattern: str, text: str, default: float) -> float:
 
 
 def _extract_voltage(text: str, default: float) -> float:
-    return _first_float(r"(\d+(?:\.\d+)?)\s*(?:v|volt|volts)\b", text, default)
+    return _first_float(r"(\d+(?:\.\d+)?)\s*(?:v|volt|volts)(?![a-zA-Z])", text, default)
 
 
 def _extract_current_a(text: str, default: float) -> float:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(ma|a)\b", text, re.IGNORECASE)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(ma|a)(?![a-zA-Z])", text, re.IGNORECASE)
     if not match:
         return default
     value = float(match.group(1))
@@ -39,7 +40,7 @@ def _extract_current_a(text: str, default: float) -> float:
 
 
 def _extract_frequency_hz(text: str, default: float) -> float:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(mhz|khz|hz)\b", text, re.IGNORECASE)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(mhz|khz|hz)(?![a-zA-Z])", text, re.IGNORECASE)
     if not match:
         return default
     multipliers = {"hz": 1.0, "khz": 1000.0, "mhz": 1_000_000.0}
@@ -47,12 +48,34 @@ def _extract_frequency_hz(text: str, default: float) -> float:
 
 
 def _extract_resistance_ohm(text: str, default: float) -> float:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(meg|m|k)?\s*(?:ohm|ohms|r)\b", text, re.IGNORECASE)
+    patterns = [
+        r"(\d+(?:\.\d+)?)\s*(meg|m|k)?\s*(?:ohm|ohms|r|Ω|欧|电阻)(?![a-zA-Z])",
+        r"(\d+(?:\.\d+)?)\s*(meg|m|k)\s*(?=$|[^a-zA-Z])",
+    ]
+    match = None
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            break
     if not match:
         return default
     prefix = (match.group(2) or "").lower()
     multipliers = {"": 1.0, "k": 1000.0, "m": 1_000_000.0, "meg": 1_000_000.0}
     return float(match.group(1)) * multipliers[prefix]
+
+
+def _extract_capacitance_f(text: str, default: float) -> float:
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(pf|nf|uf|mf|f)(?![a-zA-Z])", text, re.IGNORECASE)
+    if not match:
+        return default
+    multipliers = {
+        "pf": 1e-12,
+        "nf": 1e-9,
+        "uf": 1e-6,
+        "mf": 1e-3,
+        "f": 1.0,
+    }
+    return float(match.group(1)) * multipliers[match.group(2).lower()]
 
 
 def _extract_gain(text: str, default: float) -> float:
@@ -121,6 +144,37 @@ def _led_ir(description: str) -> Dict[str, Any]:
     return ir
 
 
+def _capacitor_discharge_led_ir(description: str) -> Dict[str, Any]:
+    voltage = _extract_voltage(description, 5.0)
+    capacitance = _extract_capacitance_f(description, 100e-6)
+    discharge_resistor = _extract_resistance_ohm(description, 10_000.0)
+    charge_resistor = 47.0
+    led_resistor = max((voltage - 2.0) / 0.01, 100.0)
+    time_constant = discharge_resistor * capacitance
+
+    ir = _base_ir(description, "capacitor_discharge_led", "Capacitor discharge LED fade")
+    ir["components"] = [
+        _component("V1", "voltage_source", voltage, "V", ["VCC", "0"], "supply"),
+        _component("VCTRL", "control_source", "PULSE", "model", ["CTRL", "0"], "switch_control"),
+        _component("S1", "switch", "momentary", "model", ["VCC", "CHARGE", "CTRL", "0"], "charge_switch"),
+        _component("RCHG", "resistor", charge_resistor, "ohm", ["CHARGE", "CAP"], "charge_resistor"),
+        _component("C1", "capacitor", capacitance, "F", ["CAP", "0"], "storage_capacitor"),
+        _component("RDIS", "resistor", round(discharge_resistor, 2), "ohm", ["CAP", "0"], "discharge_resistor"),
+        _component("RLED", "resistor", round(led_resistor, 2), "ohm", ["CAP", "LED_A"], "led_resistor"),
+        _component("D1", "led", 2.0, "Vf", ["LED_A", "0"], "indicator"),
+    ]
+    ir["constraints"] = {
+        "supply_voltage_v": voltage,
+        "capacitance_f": capacitance,
+        "discharge_resistance_ohm": discharge_resistor,
+        "time_constant_s": time_constant,
+        "button_press_s": max(0.2, min(time_constant * 0.5, 1.0)),
+    }
+    ir["source"]["rationale"].append("Modeled a momentary charge switch followed by RC discharge through a bleed resistor and LED branch.")
+    ir["nets"] = _nets_from_components(ir["components"])
+    return ir
+
+
 def _rc_filter_ir(description: str) -> Dict[str, Any]:
     cutoff = _extract_frequency_hz(description, 1000.0)
     resistance = _extract_resistance_ohm(description, 10_000.0)
@@ -153,10 +207,11 @@ def _timer_555_ir(description: str) -> Dict[str, Any]:
     ir = _base_ir(description, "555_timer_blinker", "555 timer LED blinker")
     ir["components"] = [
         _component("V1", "voltage_source", voltage, "V", ["VCC", "0"], "supply"),
-        _component("U1", "ne555", "NE555", "model", ["0", "TRIG", "OUT", "RESET", "CTRL", "THRESH", "DISCH", "VCC"], "timer"),
+        _component("U1", "ne555", "NE555", "model", ["0", "THRESH", "OUT", "VCC", "CTRL", "THRESH", "DISCH", "VCC"], "timer"),
         _component("R1", "resistor", round(r1, 2), "ohm", ["VCC", "DISCH"], "timing_ra"),
         _component("R2", "resistor", round(r2, 2), "ohm", ["DISCH", "THRESH"], "timing_rb"),
         _component("C1", "capacitor", c_timing, "F", ["THRESH", "0"], "timing_capacitor"),
+        _component("C2", "capacitor", 10e-9, "F", ["CTRL", "0"], "control_capacitor"),
         _component("R3", "resistor", round(led_resistor, 2), "ohm", ["OUT", "LED_A"], "led_resistor"),
         _component("D1", "led", 2.0, "Vf", ["LED_A", "0"], "indicator"),
     ]
@@ -220,12 +275,29 @@ def parse_description_to_ir(description: str) -> Dict[str, Any]:
     """Parse a natural-language request into a constrained CircuitIR."""
     text = description.strip()
     lower = text.lower()
+    has_capacitor = (
+        "capacitor" in lower
+        or "capacitance" in lower
+        or "电容" in lower
+        or re.search(r"\d+(?:\.\d+)?\s*(pf|nf|uf|mf|f)(?![a-zA-Z])", lower)
+    )
+    has_discharge_behavior = (
+        "discharge" in lower
+        or "fade" in lower
+        or "delay" in lower
+        or "放电" in lower
+        or "逐渐" in lower
+        or "延时" in lower
+        or "熄灭" in lower
+    )
 
     if not text:
         return unsupported_ir(description, "Description is empty.")
 
     if "555" in lower or "timer" in lower or "blinker" in lower or "blink" in lower:
         return _timer_555_ir(text)
+    if has_capacitor and (has_discharge_behavior or "led" in lower):
+        return _capacitor_discharge_led_ir(text)
     if "low-pass" in lower or "low pass" in lower or ("filter" in lower and "high" not in lower):
         return _rc_filter_ir(text)
     if "op-amp" in lower or "op amp" in lower or "amplifier" in lower or "gain" in lower:
@@ -236,7 +308,7 @@ def parse_description_to_ir(description: str) -> Dict[str, Any]:
 
     return unsupported_ir(
         description,
-        "Supported v1 circuit types are LED current limiter, RC low-pass filter, 555 timer blinker, and op-amp amplifier.",
+        "Supported v1 circuit types are LED current limiter, capacitor discharge LED fade, RC low-pass filter, 555 timer blinker, and op-amp amplifier.",
     )
 
 

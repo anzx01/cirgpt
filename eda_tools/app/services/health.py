@@ -4,6 +4,7 @@ import os
 import shutil
 from app.config import settings
 from app.utils.redis import get_redis_client
+from kicad_artifacts import detect_kicad_toolchain
 
 class HealthService:
     async def check(self) -> Dict[str, Any]:
@@ -66,10 +67,23 @@ class HealthService:
         }
 
     async def _check_kicad(self) -> Dict[str, Any]:
+        toolchain = detect_kicad_toolchain()
+        if toolchain.get("status") == "ok":
+            return {
+                "status": "ok",
+                "message": "KiCad CLI and SKiDL are available",
+                "toolchain": toolchain,
+            }
+
         for executable in [settings.KICAD_PATH, "kicad-cli", "kicad"]:
             if executable and shutil.which(executable):
-                return {"status": "ok", "message": f"Found {executable}"}
+                return {
+                    "status": "degraded",
+                    "message": f"Found {executable}, but full SKiDL/KiCad toolchain is incomplete",
+                    "toolchain": toolchain,
+                }
         return {
             "status": "degraded",
-            "message": "KiCad CLI not found; PCB output is limited to experimental preview files.",
+            "message": "KiCad/SKiDL toolchain is incomplete; schematic output will use fallback renderer.",
+            "toolchain": toolchain,
         }
