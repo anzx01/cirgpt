@@ -104,6 +104,7 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                         "algorithm": "SKiDL circuit capture + KiCad CLI SVG export",
                         "generator": kicad_result.get("generator", "skidl+kicad-cli"),
                         "erc": kicad_result.get("erc_summary"),
+                        "layout": kicad_result.get("layout"),
                     }
                     return {
                         "success": True,
@@ -117,6 +118,7 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                         "erc_summary": kicad_result.get("erc_summary"),
                         "toolchain": kicad_result.get("toolchain"),
                         "kicad_paths": kicad_result.get("paths"),
+                        "layout": kicad_result.get("layout"),
                     }
             except Exception as e:
                 logger.warning(f"KiCad/SKiDL schematic generation failed, falling back: {e}")

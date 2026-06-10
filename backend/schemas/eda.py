@@ -40,3 +40,4 @@ class SchematicResponse(BaseModel):
     erc_summary: Optional[Dict[str, Any]] = None
     toolchain: Optional[Dict[str, Any]] = None
     kicad_paths: Optional[Dict[str, Any]] = None
+    layout: Optional[str] = None

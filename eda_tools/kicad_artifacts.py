@@ -322,7 +322,7 @@ def _generator_script() -> str:
                 auto_stub=True,
                 auto_stub_fallback="labels",
             )
-            layout_name = apply_readable_kicad_layout(ir, sch_path)
+            layout_name = apply_readable_kicad_layout(ir, sch_path, net_path)
 
             kicad_cli = os.environ.get("KICAD_CLI") or "kicad-cli"
             svg_run = subprocess.run(
@@ -383,28 +383,37 @@ def _generator_script() -> str:
             }
 
 
-        def apply_readable_kicad_layout(ir, sch_path: Path):
-            """Replace SKiDL's cramped auto layout with a circuit-specific KiCad sheet."""
-            circuit_type = ir.get("circuit_type")
-            builders = {
-                "opamp_inverting": layout_opamp,
-                "opamp_non_inverting": layout_opamp,
-                "rc_low_pass_filter": layout_rc_filter,
-                "led_current_limiter": layout_led,
-                "capacitor_discharge_led": layout_cap_discharge,
-            }
-            builder = builders.get(circuit_type)
-            if not builder:
-                return "skidl-auto"
-
+        def apply_readable_kicad_layout(ir, sch_path: Path, net_path: Path):
+            """Replace SKiDL's cramped auto layout with a topology-driven KiCad sheet."""
             text = sch_path.read_text(encoding="utf-8", errors="replace")
             try:
                 prefix, lib_symbols, blocks = split_kicad_schematic(text)
-                body = builder(ir, blocks)
+                net_text = net_path.read_text(encoding="utf-8", errors="replace")
+                body = layout_from_netlist(ir, lib_symbols, blocks, net_text, allow_buses=True)
             except Exception:
                 return "skidl-auto"
+
             sch_path.write_text(prefix + lib_symbols + body + ")\n", encoding="utf-8")
-            return f"cirgpt-layout:{circuit_type}"
+            if validate_layout_net_equivalence(sch_path, net_text):
+                return "cirgpt-layout:generic-topology"
+
+            try:
+                body = layout_from_netlist(
+                    ir,
+                    lib_symbols,
+                    blocks,
+                    net_text,
+                    allow_buses=False,
+                    allow_direct=False,
+                )
+                sch_path.write_text(prefix + lib_symbols + body + ")\n", encoding="utf-8")
+                if validate_layout_net_equivalence(sch_path, net_text):
+                    return "cirgpt-layout:generic-topology-label-safe"
+            except Exception:
+                pass
+
+            sch_path.write_text(text, encoding="utf-8")
+            return "skidl-auto"
 
 
         def split_kicad_schematic(text):
@@ -463,6 +472,60 @@ def _generator_script() -> str:
             return -1
 
 
+        def validate_layout_net_equivalence(sch_path: Path, source_net_text):
+            """Check that KiCad's exported schematic netlist preserves SKiDL connectivity."""
+            kicad_cli = os.environ.get("KICAD_CLI") or "kicad-cli"
+            exported_path = sch_path.with_suffix(".layout.net")
+            proc = subprocess.run(
+                [
+                    kicad_cli,
+                    "sch",
+                    "export",
+                    "netlist",
+                    "--format",
+                    "kicadsexpr",
+                    "-o",
+                    str(exported_path),
+                    str(sch_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+            )
+            if proc.returncode != 0 or not exported_path.exists():
+                return False
+
+            _source_refs, source_pin_nets = parse_netlist_graph(source_net_text)
+            _layout_refs, layout_pin_nets = parse_netlist_graph(
+                exported_path.read_text(encoding="utf-8", errors="replace")
+            )
+            return same_pin_connectivity(source_pin_nets, layout_pin_nets)
+
+
+        def same_pin_connectivity(source_pin_nets, layout_pin_nets):
+            source = connectivity_partition(source_pin_nets)
+            layout = connectivity_partition(layout_pin_nets)
+            nodes = set(source) | set(layout)
+            return all(source.get(node, frozenset({node})) == layout.get(node, frozenset({node})) for node in nodes)
+
+
+        def connectivity_partition(pin_nets):
+            nets = {}
+            for node, net_name in pin_nets.items():
+                ref, _pin = node
+                if str(ref).startswith("#"):
+                    continue
+                nets.setdefault(net_name, set()).add(node)
+            partition = {}
+            for nodes in nets.values():
+                frozen = frozenset(nodes)
+                for node in nodes:
+                    partition[node] = frozen
+            return partition
+
+
         def q(value):
             return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -486,7 +549,14 @@ def _generator_script() -> str:
             return match.group(1) if match else None
 
 
-        def move_symbol(block, x, y, rot=None):
+        def block_mirror(block):
+            import re
+
+            match = re.search(r'\n    \(mirror ([xy])\)', block)
+            return match.group(1) if match else None
+
+
+        def move_symbol(block, x, y, rot=None, prop_rot=None):
             import re
 
             at_pattern = r'(\n    \(at )([-+0-9.]+) ([-+0-9.]+) ([-+0-9.]+)(\))'
@@ -513,25 +583,27 @@ def _generator_script() -> str:
             def move_property(prop_match):
                 prop_x = float(prop_match.group(2)) + dx
                 prop_y = float(prop_match.group(3)) + dy
-                prop_rot = new_rot if rot is not None else float(prop_match.group(4))
-                return f"{prop_match.group(1)}{prop_x:g} {prop_y:g} {prop_rot:g}{prop_match.group(5)}"
+                property_rot = prop_rot
+                if property_rot is None:
+                    property_rot = new_rot if rot is not None else float(prop_match.group(4))
+                return f"{prop_match.group(1)}{prop_x:g} {prop_y:g} {float(property_rot):g}{prop_match.group(5)}"
 
             return re.sub(prop_pattern, move_property, block)
 
 
-        def place_ref(blocks, ref, x, y, rot=None):
+        def place_ref(blocks, ref, x, y, rot=None, prop_rot=None):
             for block in blocks:
                 if block.startswith("  (symbol") and block_ref(block) == ref:
-                    return move_symbol(block, x, y, rot) + "\n"
+                    return move_symbol(block, x, y, rot, prop_rot) + "\n"
             raise ValueError(f"Symbol reference not found: {ref}")
 
 
-        def place_lib(blocks, lib_id, x, y, rot=None, occurrence=0):
+        def place_lib(blocks, lib_id, x, y, rot=None, occurrence=0, prop_rot=None):
             seen = 0
             for block in blocks:
                 if block.startswith("  (symbol") and block_lib_id(block) == lib_id:
                     if seen == occurrence:
-                        return move_symbol(block, x, y, rot) + "\n"
+                        return move_symbol(block, x, y, rot, prop_rot) + "\n"
                     seen += 1
             raise ValueError(f"Symbol library id not found: {lib_id}")
 
@@ -644,6 +716,477 @@ def _generator_script() -> str:
 
         def no_connect(x, y):
             return f"  (no_connect (at {x:g} {y:g}) (uuid {uid(f'nc:{x:g}:{y:g}')}))\n"
+
+
+        def layout_from_netlist(ir, lib_symbols, blocks, net_text, allow_buses=True, allow_direct=True):
+            import math
+            import re
+
+            refs, pin_nets = parse_netlist_graph(net_text)
+            ref_blocks = {
+                block_ref(block): block
+                for block in blocks
+                if block.startswith("  (symbol") and block_ref(block)
+            }
+            refs = [ref for ref in refs if ref in ref_blocks]
+            if not refs:
+                raise ValueError("No schematic symbols were found for generic layout")
+
+            lib_pins = parse_lib_symbol_pins(lib_symbols)
+            positions = assign_generic_positions(refs, ref_blocks, lib_pins, pin_nets)
+            b = ["\n"]
+
+            for ref in refs:
+                x, y, rot = positions[ref]
+                b.append(place_ref(blocks, ref, x, y, rot, prop_rot=0))
+
+            for start, end, net_name in power_symbol_wires(refs, ref_blocks, lib_pins, pin_nets, positions):
+                b.append(wire([start, end]))
+                mid_x = (start[0] + end[0]) / 2.0
+                mid_y = (start[1] + end[1]) / 2.0
+                b.append(label(display_net_name(net_name), mid_x, mid_y, 0, "left", "bidirectional"))
+
+            core_x = core_center_x(refs, ref_blocks, lib_pins, positions)
+            directly_wired = set()
+            junction_points = set()
+            if allow_buses:
+                for points, pins, joints in multi_terminal_signal_buses(refs, ref_blocks, lib_pins, pin_nets, positions, core_x):
+                    b.append(wire(points))
+                    directly_wired.update(pins)
+                    junction_points.update(joints)
+            if allow_direct:
+                for points, pins in direct_signal_wires(refs, ref_blocks, lib_pins, pin_nets, positions):
+                    b.append(wire(points))
+                    directly_wired.update(pins)
+            for x, y in sorted(junction_points):
+                b.append(junction(x, y))
+
+            for ref in refs:
+                if ref.startswith("#"):
+                    continue
+                b.append(ref_net_labels(ref, ref_blocks, lib_pins, pin_nets, positions, core_x, directly_wired))
+
+            return "".join(b)
+
+
+        def core_center_x(refs, ref_blocks, lib_pins, positions):
+            core_refs = [
+                ref for ref in refs
+                if not ref.startswith("#")
+                and len(lib_pins.get(block_lib_id(ref_blocks[ref]), {})) > 2
+                and ref in positions
+            ]
+            if core_refs:
+                return sum(positions[ref][0] for ref in core_refs) / len(core_refs)
+            normal = [ref for ref in refs if not ref.startswith("#") and ref in positions]
+            if normal:
+                return sum(positions[ref][0] for ref in normal) / len(normal)
+            return 139.7
+
+
+        def ref_net_labels(ref, ref_blocks, lib_pins, pin_nets, positions, core_x, skip_pins):
+            block = ref_blocks[ref]
+            lib_id = block_lib_id(block)
+            pins = lib_pins.get(lib_id, {})
+            mirror = block_mirror(block)
+            sx, sy, rot = positions[ref]
+            by_net = {}
+            chunks = []
+
+            for pin in sorted(pins, key=pin_sort_key):
+                if (ref, pin) in skip_pins:
+                    continue
+                dx, dy, _pin_rot = pins[pin]
+                px, py, vx, vy = pin_position(sx, sy, rot, dx, dy, mirror)
+                net_name = pin_nets.get((ref, pin))
+                if not net_name:
+                    chunks.append(no_connect(px, py))
+                    continue
+                by_net.setdefault(net_name, []).append({
+                    "pin": pin,
+                    "point": (px, py),
+                    "vector": (vx, vy),
+                })
+
+            for net_name, records in by_net.items():
+                chunks.append(grouped_label_for_records(ref, sx, records, net_name, core_x, len(pins) > 2))
+            return "".join(chunks)
+
+
+        def pin_sort_key(pin):
+            try:
+                return (0, int(pin))
+            except (TypeError, ValueError):
+                return (1, str(pin))
+
+
+        def round_to_grid(value, grid=1.27):
+            return round(float(value) / grid) * grid
+
+
+        def grouped_label_for_records(ref, symbol_x, records, net_name, core_x, is_core):
+            points = [record["point"] for record in records]
+            vectors = [record["vector"] for record in records]
+            avg_x = sum(x for x, _ in points) / len(points)
+            avg_y = sum(y for _, y in points) / len(points)
+            avg_vx = sum(x for x, _ in vectors) / len(vectors)
+            avg_vy = sum(y for _, y in vectors) / len(vectors)
+
+            if abs(avg_vx) >= abs(avg_vy) and abs(avg_vx) > 0.01:
+                side = "left" if avg_vx < 0 else "right"
+            elif abs(symbol_x - core_x) > 2.54:
+                side = "left" if symbol_x < core_x else "right"
+            else:
+                side = "left" if avg_x <= symbol_x else "right"
+
+            vertical_core_pin = is_core and abs(avg_vy) > abs(avg_vx) and abs(avg_vy) > 0.01
+            if side == "left":
+                label_x = min(x for x, _ in points) - 7.62
+                justify = "right"
+            else:
+                label_x = max(x for x, _ in points) + 7.62
+                justify = "left"
+            if vertical_core_pin:
+                label_y = round_to_grid(avg_y + (-7.62 if avg_vy < 0 else 7.62))
+            else:
+                label_y = round_to_grid(avg_y)
+
+            chunks = []
+            if vertical_core_pin:
+                for px, py in points:
+                    py = round_to_grid(py)
+                    chunks.append(wire([(px, py), (px, label_y), (label_x, label_y)]))
+            else:
+                ys = sorted({round_to_grid(y) for _x, y in points} | {label_y})
+                for px, py in points:
+                    py = round_to_grid(py)
+                    chunks.append(wire([(px, py), (label_x, py)]))
+                if len(ys) > 1:
+                    chunks.append(wire([(label_x, ys[0]), (label_x, ys[-1])]))
+            chunks.append(label(display_net_name(net_name), label_x, label_y, 0, justify, "bidirectional"))
+            return "".join(chunks)
+
+
+        def power_symbol_wires(refs, ref_blocks, lib_pins, pin_nets, positions):
+            by_net = {}
+            for ref in refs:
+                if not ref.startswith("#"):
+                    continue
+                block = ref_blocks[ref]
+                lib_id = block_lib_id(block)
+                pins = lib_pins.get(lib_id, {})
+                mirror = block_mirror(block)
+                sx, sy, rot = positions[ref]
+                for pin, (dx, dy, _pin_rot) in pins.items():
+                    net_name = pin_nets.get((ref, pin))
+                    if not net_name:
+                        continue
+                    px, py, _vx, _vy = pin_position(sx, sy, rot, dx, dy, mirror)
+                    by_net.setdefault(net_name, []).append((ref, (px, py)))
+
+            wires = []
+            for net_name, items in by_net.items():
+                if len(items) < 2:
+                    continue
+                power_symbols = [
+                    item for item in items
+                    if block_lib_id(ref_blocks[item[0]]) != "power:PWR_FLAG"
+                ]
+                source = power_symbols[0][1] if power_symbols else items[0][1]
+                for ref, point in items:
+                    if point != source:
+                        wires.append((source, point, net_name))
+            return wires
+
+
+        def direct_signal_wires(refs, ref_blocks, lib_pins, pin_nets, positions):
+            by_net = {}
+            for ref in refs:
+                if ref.startswith("#"):
+                    continue
+                block = ref_blocks[ref]
+                pins = lib_pins.get(block_lib_id(block), {})
+                mirror = block_mirror(block)
+                sx, sy, rot = positions[ref]
+                for pin, (dx, dy, _pin_rot) in pins.items():
+                    net_name = pin_nets.get((ref, pin))
+                    if not net_name or is_power_net(net_name):
+                        continue
+                    px, py, _vx, _vy = pin_position(sx, sy, rot, dx, dy, mirror)
+                    by_net.setdefault(net_name, []).append((ref, pin, (px, py)))
+
+            routes = []
+            for _net_name, records in by_net.items():
+                if len(records) != 2:
+                    continue
+                first, second = records
+                routes.append((
+                    manhattan_points(first[2], second[2]),
+                    {(first[0], first[1]), (second[0], second[1])},
+                ))
+            return routes
+
+
+        def multi_terminal_signal_buses(refs, ref_blocks, lib_pins, pin_nets, positions, core_x):
+            by_net = {}
+            for ref in refs:
+                if ref.startswith("#"):
+                    continue
+                block = ref_blocks[ref]
+                pins = lib_pins.get(block_lib_id(block), {})
+                mirror = block_mirror(block)
+                is_core = len(pins) > 2
+                sx, sy, rot = positions[ref]
+                for pin, (dx, dy, _pin_rot) in pins.items():
+                    net_name = pin_nets.get((ref, pin))
+                    if not net_name or is_power_net(net_name):
+                        continue
+                    px, py, _vx, _vy = pin_position(sx, sy, rot, dx, dy, mirror)
+                    by_net.setdefault(net_name, []).append({
+                        "ref": ref,
+                        "pin": pin,
+                        "point": (px, py),
+                        "is_core": is_core,
+                    })
+
+            candidates = []
+            for net_name, records in by_net.items():
+                if len(records) < 3 or len(records) > 6:
+                    continue
+                if not any(record["is_core"] for record in records):
+                    continue
+                xs = [record["point"][0] for record in records]
+                same_left = max(xs) < core_x + 1.27
+                same_right = min(xs) > core_x - 1.27
+                if not (same_left or same_right):
+                    continue
+
+                if same_left:
+                    trunk_x = round_to_grid((max(xs) + min(xs)) / 2.0)
+                else:
+                    trunk_x = round_to_grid((max(xs) + min(xs)) / 2.0)
+                ys = sorted({record["point"][1] for record in records})
+                candidates.append({
+                    "net_name": net_name,
+                    "records": records,
+                    "side": "left" if same_left else "right",
+                    "trunk_x": trunk_x,
+                    "y_min": ys[0],
+                    "y_max": ys[-1],
+                    "core_count": sum(1 for record in records if record["is_core"]),
+                })
+
+            accepted = []
+            for candidate in sorted(candidates, key=lambda item: (-item["core_count"], item["y_min"], item["net_name"])):
+                overlaps = any(
+                    candidate["side"] == other["side"]
+                    and ranges_overlap(candidate["y_min"], candidate["y_max"], other["y_min"], other["y_max"], margin=2.54)
+                    for other in accepted
+                )
+                if not overlaps:
+                    accepted.append(candidate)
+
+            routes = []
+            for candidate in accepted:
+                records = candidate["records"]
+                trunk_x = candidate["trunk_x"]
+                ys = sorted({record["point"][1] for record in records})
+                pins = {(record["ref"], record["pin"]) for record in records}
+                joints = {(trunk_x, record["point"][1]) for record in records}
+                routes.append(([(trunk_x, ys[0]), (trunk_x, ys[-1])], pins, joints))
+                for record in records:
+                    px, py = record["point"]
+                    routes.append(([(px, py), (trunk_x, py)], pins, joints))
+            return routes
+
+
+        def ranges_overlap(a_min, a_max, b_min, b_max, margin=0):
+            return max(a_min, b_min) <= min(a_max, b_max) + margin
+
+
+        def manhattan_points(p1, p2):
+            x1, y1 = p1
+            x2, y2 = p2
+            if abs(x1 - x2) < 0.01 or abs(y1 - y2) < 0.01:
+                return [p1, p2]
+            mid_x = round_to_grid((x1 + x2) / 2.0)
+            return [p1, (mid_x, y1), (mid_x, y2), p2]
+
+
+        def is_power_net(net_name):
+            name = display_net_name(net_name).upper()
+            return name in {"GND", "VCC", "VDD", "VEE"} or name.startswith("+") or name.startswith("-")
+
+
+        def parse_netlist_graph(net_text):
+            import re
+
+            refs = []
+            components_match = re.search(r"\n\s*\(components\b", net_text)
+            if components_match:
+                block_start = net_text.find("(", components_match.start())
+                block_end = find_matching_paren(net_text, block_start)
+                component_block = net_text[block_start:block_end + 1]
+                refs = re.findall(r'\(ref "([^"]+)"\)', component_block)
+
+            pin_nets = {}
+            for match in re.finditer(r"\n\s*\(net\b", net_text):
+                start = net_text.find("(", match.start())
+                end = find_matching_paren(net_text, start)
+                if end < 0:
+                    continue
+                net_block = net_text[start:end + 1]
+                name_match = re.search(r'\(name "([^"]+)"\)', net_block)
+                if not name_match:
+                    continue
+                net_name = name_match.group(1)
+                for node_match in re.finditer(r"\(node\b", net_block):
+                    node_start = net_block.find("(", node_match.start())
+                    node_end = find_matching_paren(net_block, node_start)
+                    if node_end < 0:
+                        continue
+                    node_block = net_block[node_start:node_end + 1]
+                    ref_match = re.search(r'\(ref "([^"]+)"\)', node_block)
+                    pin_match = re.search(r'\(pin "([^"]+)"\)', node_block)
+                    if ref_match and pin_match:
+                        pin_nets[(ref_match.group(1), pin_match.group(1))] = net_name
+
+            return refs, pin_nets
+
+
+        def parse_lib_symbol_pins(lib_symbols):
+            import re
+
+            pin_map = {}
+            for match in re.finditer(r'\n    \(symbol "', lib_symbols):
+                start = lib_symbols.find("(", match.start())
+                end = find_matching_paren(lib_symbols, start)
+                if end < 0:
+                    continue
+                lib_block = lib_symbols[start:end + 1]
+                id_match = re.search(r'\(symbol "([^"]+)"', lib_block)
+                if not id_match:
+                    continue
+                lib_id = id_match.group(1)
+                pins = {}
+                for pin_match in re.finditer(r"\(pin\s+", lib_block):
+                    pin_start = pin_match.start()
+                    pin_end = find_matching_paren(lib_block, pin_start)
+                    if pin_end < 0:
+                        continue
+                    pin_block = lib_block[pin_start:pin_end + 1]
+                    num_match = re.search(r'\(number "([^"]+)"', pin_block)
+                    at_match = re.search(r'\(at ([-+0-9.]+) ([-+0-9.]+) ([-+0-9.]+)\)', pin_block)
+                    if num_match and at_match:
+                        pins[num_match.group(1)] = (
+                            float(at_match.group(1)),
+                            float(at_match.group(2)),
+                            float(at_match.group(3)),
+                        )
+                pin_map[lib_id] = pins
+            return pin_map
+
+
+        def assign_generic_positions(refs, ref_blocks, lib_pins, pin_nets):
+            import math
+
+            positions = {}
+            normal_refs = [ref for ref in refs if not ref.startswith("#")]
+            power_refs = [ref for ref in refs if ref.startswith("#")]
+
+            core_refs = [
+                ref for ref in normal_refs
+                if len(lib_pins.get(block_lib_id(ref_blocks[ref]), {})) > 2
+            ]
+            passive_refs = [ref for ref in normal_refs if ref not in core_refs]
+
+            for idx, ref in enumerate(core_refs or passive_refs[:1]):
+                positions[ref] = (139.7, 96.52 + idx * 35.56, 0)
+            passive_refs = [ref for ref in passive_refs if ref not in positions]
+
+            left_refs = []
+            right_refs = []
+            if core_refs:
+                core_ref = core_refs[0]
+                core_lib = block_lib_id(ref_blocks[core_ref])
+                core_pin_sides = {}
+                for pin, (dx, _dy, _rot) in lib_pins.get(core_lib, {}).items():
+                    net_name = pin_nets.get((core_ref, pin))
+                    if net_name:
+                        core_pin_sides[net_name] = "left" if dx < 0 else "right"
+                for ref in passive_refs:
+                    shared = {
+                        net for (node_ref, _pin), net in pin_nets.items()
+                        if node_ref == ref and net in core_pin_sides
+                    }
+                    if any(core_pin_sides[net] == "left" for net in shared):
+                        left_refs.append(ref)
+                    else:
+                        right_refs.append(ref)
+            else:
+                split = math.ceil(len(passive_refs) / 2)
+                left_refs = passive_refs[:split]
+                right_refs = passive_refs[split:]
+
+            if not core_refs and passive_refs[:1]:
+                right_refs = [ref for ref in right_refs if ref not in positions]
+
+            for idx, ref in enumerate(left_refs):
+                positions[ref] = (95.25, 81.28 + idx * 25.4, 0)
+            for idx, ref in enumerate(right_refs):
+                lib_id = block_lib_id(ref_blocks[ref]) or ""
+                rot = 180 if lib_id == "Device:LED" else 90
+                positions[ref] = (181.61, 81.28 + idx * 25.4, rot)
+
+            power_net_counts = {}
+            for ref in power_refs:
+                nets = [net for (node_ref, _pin), net in pin_nets.items() if node_ref == ref]
+                net_name = display_net_name(nets[0]) if nets else ref
+                idx = power_net_counts.get(net_name, 0)
+                power_net_counts[net_name] = idx + 1
+                if net_name == "GND":
+                    y = 142.24
+                elif net_name.startswith("-"):
+                    y = 76.2
+                else:
+                    y = 63.5
+                positions[ref] = (76.2 + idx * 15.24, y, 0)
+
+            return positions
+
+
+        def pin_position(symbol_x, symbol_y, symbol_rot, dx, dy, mirror=None):
+            sx = float(dx)
+            sy = -float(dy)
+            if mirror == "x":
+                sy = -sy
+            elif mirror == "y":
+                sx = -sx
+            rot = int(round(float(symbol_rot))) % 360
+            if rot == 90:
+                rx, ry = sy, -sx
+            elif rot == 180:
+                rx, ry = -sx, -sy
+            elif rot == 270:
+                rx, ry = -sy, sx
+            else:
+                rx, ry = sx, sy
+            return symbol_x + rx, symbol_y + ry, rx, ry
+
+
+        def label_anchor(px, py, vx, vy):
+            offset = 5.08
+            if abs(vx) >= abs(vy):
+                if vx < 0:
+                    return px - offset, py, 0, "right"
+                return px + offset, py, 0, "left"
+            if vy < 0:
+                return px, py - offset, 270, "right"
+            return px, py + offset, 90, "left"
+
+
+        def display_net_name(net_name):
+            return "GND" if str(net_name) in {"0", "GND"} else str(net_name)
 
 
         def layout_opamp(ir, blocks):
@@ -986,7 +1529,7 @@ def _generator_script() -> str:
         def build_led(ir):
             supply = value(role(ir, "supply"), 5.0)
             r_val = value(role(ir, "current_limit"), 150.0)
-            vcc = net("VCC", True)
+            vcc = net(voltage_label(supply), True)
             gnd = net("GND", True)
             led_a = net("LED_A")
             add_power(vcc, gnd, voltage_label(supply))
@@ -995,8 +1538,8 @@ def _generator_script() -> str:
             d1 = led("D1")
             r1[1] += vcc
             r1[2] += led_a
-            d1[1] += led_a
-            d1[2] += gnd
+            d1[2] += led_a
+            d1[1] += gnd
 
 
         def build_rc_filter(ir):
@@ -1029,7 +1572,7 @@ def _generator_script() -> str:
             rled_val = value(role(ir, "led_resistor"), 330.0)
             c_val = value(role(ir, "storage_capacitor"), 100e-6)
 
-            vcc = net("VCC", True)
+            vcc = net(voltage_label(supply), True)
             gnd = net("GND", True)
             charge = net("CHARGE")
             cap = net("CAP")
@@ -1053,8 +1596,8 @@ def _generator_script() -> str:
             rdis[2] += gnd
             rled[1] += cap
             rled[2] += led_a
-            d1[1] += led_a
-            d1[2] += gnd
+            d1[2] += led_a
+            d1[1] += gnd
 
 
         def build_555(ir):
@@ -1065,7 +1608,7 @@ def _generator_script() -> str:
             c2_val = value(role(ir, "control_capacitor"), 10e-9)
             rled_val = value(role(ir, "led_resistor"), 470.0)
 
-            vcc = net("VCC", True)
+            vcc = net(voltage_label(supply), True)
             gnd = net("GND", True)
             thresh = net("THRESH_TRIG")
             disch = net("DISCH")
@@ -1101,8 +1644,8 @@ def _generator_script() -> str:
             c2[2] += gnd
             r3[1] += out
             r3[2] += led_a
-            d1[1] += led_a
-            d1[2] += gnd
+            d1[2] += led_a
+            d1[1] += gnd
 
 
         def build_opamp(ir):

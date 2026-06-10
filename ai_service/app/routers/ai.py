@@ -8,6 +8,7 @@ import logging
 
 from nlp.circuit_ir import parse_description_to_ir
 from nlp.circuit_generator import generate_circuit_design
+from nlp.deepseek_parser import deepseek_configured, parse_description_with_deepseek
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,19 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
     try:
         logger.info(f"Parsing: {request.description[:100]}...")
 
-        requirements = parse_description_to_ir(request.description)
+        parser_warnings = []
+        if deepseek_configured():
+            try:
+                requirements = await parse_description_with_deepseek(request.description)
+            except Exception as exc:
+                logger.warning(f"DeepSeek parsing failed, falling back to rule parser: {exc}")
+                requirements = parse_description_to_ir(request.description)
+                parser_warnings.append("DeepSeek parsing failed; rule-based parser was used.")
+        else:
+            requirements = parse_description_to_ir(request.description)
+
+        if parser_warnings:
+            requirements.setdefault("warnings", []).extend(parser_warnings)
 
         logger.info(f"Successfully parsed requirements")
         return ParseResponse(
@@ -117,9 +130,15 @@ async def list_models() -> Dict[str, Any]:
         return {
             "models": [
                 {
+                    "name": "DeepSeek",
+                    "version": "chat-completions",
+                    "description": "Optional large-model parser that returns validated CircuitIR JSON",
+                    "status": "active" if deepseek_configured() else "not_configured"
+                },
+                {
                     "name": "CircuitBERT",
                     "version": "1.0",
-                    "description": "Circuit design understanding model",
+                    "description": "Local/rule fallback circuit design understanding",
                     "status": "active"
                 }
             ]

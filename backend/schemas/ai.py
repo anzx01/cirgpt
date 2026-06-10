@@ -16,6 +16,7 @@ class AIResponse(BaseModel):
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
+    requirements: Optional[Dict[str, Any]] = None
 
 
 class ParseRequest(BaseModel):
