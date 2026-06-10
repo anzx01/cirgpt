@@ -136,21 +136,60 @@ def _timer_netlist(ir: Dict[str, Any]) -> str:
 
 def _opamp_netlist(ir: Dict[str, Any]) -> str:
     gain = abs(float(ir.get("constraints", {}).get("gain", 10.0)))
-    signed_gain = gain if ir.get("circuit_type") == "opamp_non_inverting" else -gain
+    is_inverting = ir.get("circuit_type") == "opamp_inverting"
     supply = abs(float(ir.get("constraints", {}).get("supply_voltage_v", 15.0)))
     r_input = _value(_role(ir, "input_resistor"), 10_000.0)
-    r_feedback = _value(_role(ir, "feedback"), 100_000.0)
+    r_feedback = _value(_role(ir, "feedback"), r_input * gain)
 
     lines = _header(ir)
     lines.extend([
-        "Vin IN 0 SIN(0 0.1 1000)",
+        "* Real op-amp circuit using subcircuit model",
+        f"* Gain = {'-' if is_inverting else '+'}{gain}",
+        "",
+        "Vin IN 0 AC 1 SIN(0 0.1 1000)",
         f"VCC VCC 0 DC {supply:g}",
         f"VEE VEE 0 DC -{supply:g}",
-        f"R1 IN SUM {_spice_value(r_input, 'ohm')}",
-        f"R2 OUT SUM {_spice_value(r_feedback, 'ohm')}",
-        f"EGAIN OUT 0 IN 0 {signed_gain:g}",
-        "RLOAD OUT 0 100k",
+        "",
+    ])
+
+    if is_inverting:
+        # Inverting configuration
+        lines.extend([
+            "* Inverting op-amp configuration",
+            f"R1 IN SUMMING {_spice_value(r_input, 'ohm')}",
+            f"R2 OUTPUT SUMMING {_spice_value(r_feedback, 'ohm')}",
+            "R3 SUMMING 0 10Meg",
+            "",
+            "* Op-amp subcircuit: inp inm out vcc vee",
+            "XU1 0 SUMMING OUTPUT VCC VEE OPAMP_IDEAL",
+            "",
+            "RLOAD OUTPUT 0 100k",
+        ])
+    else:
+        # Non-inverting configuration
+        lines.extend([
+            "* Non-inverting op-amp configuration",
+            f"R1 SUMMING 0 {_spice_value(r_input, 'ohm')}",
+            f"R2 OUTPUT SUMMING {_spice_value(r_feedback, 'ohm')}",
+            "",
+            "* Op-amp subcircuit: inp inm out vcc vee",
+            "XU1 IN SUMMING OUTPUT VCC VEE OPAMP_IDEAL",
+            "",
+            "RLOAD OUTPUT 0 100k",
+        ])
+
+    # Add op-amp subcircuit model
+    lines.extend([
+        "",
+        "* Ideal op-amp subcircuit model (simplified UA741)",
+        ".subckt OPAMP_IDEAL inp inm out vcc vee",
+        "  Rin inp inm 2Meg",
+        "  Egain out 0 inp inm 200k",
+        "  Rout out 0 75",
+        ".ends",
+        "",
         ".tran 10u 5m",
+        ".ac dec 20 10 100k",
         ".end",
     ])
     return "\n".join(lines)

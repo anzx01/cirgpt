@@ -301,17 +301,88 @@ class CircuitGenerator:
             })
 
         if circuit_type in {"opamp_inverting", "opamp_non_inverting"}:
-            gain = constraints.get("gain", 10.0)
+            gain = abs(constraints.get("gain", 10.0))
+            supply_voltage = constraints.get("supply_voltage_v", 15.0)
+
+            # Calculate resistor values for real op-amp circuit
+            r_in = 10_000  # 10kΩ input resistor
+            r_feedback = r_in * gain  # Feedback resistor for desired gain
+
             if circuit_type == "opamp_inverting":
-                gain = -abs(gain)
-            return "\n".join([
-                "* Ideal op-amp amplifier",
-                "Vin IN 0 SIN(0 0.1 1000)",
-                f"EGAIN OUT 0 IN 0 {gain:g}",
-                "RLOAD OUT 0 100k",
-                ".tran 10u 5m",
-                ".end",
-            ])
+                # Real inverting op-amp circuit
+                return "\n".join([
+                    "* Inverting Op-Amp Amplifier",
+                    f"* Gain = -{gain}",
+                    "* Using UA741 Op-Amp",
+                    "",
+                    "* Power supplies",
+                    f"VCC VCC 0 DC {supply_voltage}",
+                    f"VEE VEE 0 DC {-supply_voltage}",
+                    "",
+                    "* Input signal",
+                    "Vin IN 0 AC 1 SIN(0 0.1 1000)",
+                    "",
+                    "* Op-amp circuit",
+                    f"R1 IN SUMMING {r_in}",
+                    f"R2 OUTPUT SUMMING {r_feedback}",
+                    "R3 SUMMING 0 10Meg",
+                    "",
+                    "* UA741 Op-Amp: pins = in+ in- out vcc vee",
+                    "XU1 0 SUMMING OUTPUT VCC VEE OPAMP_741",
+                    "",
+                    "* Load resistor",
+                    "RLOAD OUTPUT 0 100k",
+                    "",
+                    "* UA741 op-amp subcircuit model",
+                    ".subckt OPAMP_741 inp inm out vcc vee",
+                    "+ Rin=2Meg Rout=75 Aol=200k GBW=1Meg Vos=1m",
+                    "  Rin inp inm 2Meg",
+                    "  Egain out 0 inm inp 200k",
+                    "  Rout out 0 75",
+                    ".ends",
+                    "",
+                    "* Analysis",
+                    ".tran 10u 5m",
+                    ".ac dec 20 10 100k",
+                    ".end",
+                ])
+            else:
+                # Non-inverting op-amp circuit
+                return "\n".join([
+                    "* Non-Inverting Op-Amp Amplifier",
+                    f"* Gain = {1 + gain}",
+                    "* Using UA741 Op-Amp",
+                    "",
+                    "* Power supplies",
+                    f"VCC VCC 0 DC {supply_voltage}",
+                    f"VEE VEE 0 DC {-supply_voltage}",
+                    "",
+                    "* Input signal",
+                    "Vin IN 0 AC 1 SIN(0 0.1 1000)",
+                    "",
+                    "* Op-amp circuit",
+                    f"R1 SUMMING 0 {r_in}",
+                    f"R2 OUTPUT SUMMING {r_feedback}",
+                    "",
+                    "* UA741 Op-Amp",
+                    "XU1 IN SUMMING OUTPUT VCC VEE OPAMP_741",
+                    "",
+                    "* Load resistor",
+                    "RLOAD OUTPUT 0 100k",
+                    "",
+                    "* UA741 op-amp subcircuit model",
+                    ".subckt OPAMP_741 inp inm out vcc vee",
+                    "+ Rin=2Meg Rout=75 Aol=200k GBW=1Meg Vos=1m",
+                    "  Rin inp inm 2Meg",
+                    "  Egain out 0 inp inm 200k",
+                    "  Rout out 0 75",
+                    ".ends",
+                    "",
+                    "* Analysis",
+                    ".tran 10u 5m",
+                    ".ac dec 20 10 100k",
+                    ".end",
+                ])
 
         raise ValueError(f"Unsupported CircuitIR type: {circuit_type}")
 
