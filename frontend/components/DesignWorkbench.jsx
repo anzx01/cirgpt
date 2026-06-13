@@ -23,13 +23,14 @@ import { API_BASE_URL } from '../config.mjs';
 import { handleApiCall, validateCircuitDescription, formatUserError } from '../lib/errorUtils';
 
 const examplePrompts = [
+  'Design an automatic plant watering controller with a soil moisture sensor and 12V pump',
+  'Create a temperature controlled fan driver with a sensor input and MOSFET output',
   'Design a 555 timer LED blinker circuit with 1 Hz frequency and 9V supply',
   'Create an inverting op-amp amplifier with gain of 10',
-  'Design a simple LED circuit with 5V supply and 20mA current',
   'Create a low-pass RC filter with cutoff frequency 1kHz'
 ];
 
-const supportedTypes = ['LED limiter', 'RC low-pass', '555 blinker', 'Op-amp amplifier'];
+const supportedTypes = ['Natural language draft', 'Sensors + drivers', 'LED limiter', 'RC low-pass', '555 blinker', 'Op-amp amplifier'];
 
 export default function DesignWorkbench() {
   const router = useRouter();

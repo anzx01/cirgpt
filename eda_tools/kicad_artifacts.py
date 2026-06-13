@@ -389,13 +389,17 @@ def _generator_script() -> str:
             try:
                 prefix, lib_symbols, blocks = split_kicad_schematic(text)
                 net_text = net_path.read_text(encoding="utf-8", errors="replace")
-                body = layout_from_netlist(ir, lib_symbols, blocks, net_text, allow_buses=True)
+                body = layout_for_circuit_type(ir, blocks)
+                layout_name = f"cirgpt-layout:{ir.get('circuit_type')}"
+                if not body:
+                    body = layout_from_netlist(ir, lib_symbols, blocks, net_text, allow_buses=True)
+                    layout_name = "cirgpt-layout:generic-topology"
             except Exception:
                 return "skidl-auto"
 
             sch_path.write_text(prefix + lib_symbols + body + ")\n", encoding="utf-8")
             if validate_layout_net_equivalence(sch_path, net_text):
-                return "cirgpt-layout:generic-topology"
+                return layout_name
 
             try:
                 body = layout_from_netlist(
@@ -414,6 +418,19 @@ def _generator_script() -> str:
 
             sch_path.write_text(text, encoding="utf-8")
             return "skidl-auto"
+
+
+        def layout_for_circuit_type(ir, blocks):
+            layouts = {
+                "led_current_limiter": layout_led,
+                "capacitor_discharge_led": layout_cap_discharge,
+                "rc_low_pass_filter": layout_rc_filter,
+                "555_timer_blinker": layout_555,
+                "opamp_inverting": layout_opamp,
+                "opamp_non_inverting": layout_opamp,
+            }
+            layout = layouts.get(ir.get("circuit_type"))
+            return layout(ir, blocks) if layout else ""
 
 
         def split_kicad_schematic(text):
@@ -1202,9 +1219,9 @@ def _generator_script() -> str:
                 b.append(place_ref(blocks, "R1", 109.22, 106.68, 90))
             else:
                 b.append(place_ref(blocks, "R1", 137.16, 119.38, 0))
-            b.append(place_ref(blocks, "R2", 152.4, 78.74, 90))
+            b.append(place_ref(blocks, "R2", 152.4, 78.74, 270))
             b.append(place_ref(blocks, "U1", 152.4, 104.14, 0))
-            b.append(place_ref(blocks, "RLOAD", 180.34, 119.38, 0))
+            b.append(place_ref(blocks, "RLOAD", 180.34, 119.38, 180))
             b.append(place_lib(blocks, "power:+15V", 149.86, 96.52, 0, occurrence=0))
             b.append(place_lib(blocks, "power:-15V", 149.86, 111.76, 0, occurrence=0))
             b.append(place_lib(blocks, "power:GND", 137.16, gnd_y, 0, occurrence=0))
@@ -1233,6 +1250,9 @@ def _generator_script() -> str:
                 b.append(wire([(180.34, 127), (144.78, 127)]))
             b.append(wire([(149.86, 96.52), (157.48, 96.52)]))
             b.append(wire([(149.86, 111.76), (160.02, 111.76)]))
+            b.append(label("+15V", 157.48, 96.52, 0, "left", "bidirectional"))
+            b.append(label("-15V", 160.02, 111.76, 0, "left", "bidirectional"))
+            b.append(label("GND", 144.78, gnd_y, 0, "left", "bidirectional"))
             b.append(junction(144.78, 106.68))
             b.append(junction(160.02, 104.14))
             b.append(junction(180.34, 104.14))
@@ -1314,6 +1334,60 @@ def _generator_script() -> str:
             b.append(junction(154, 78))
             b.append(label("CAP", 158, 74, 0, "left", "bidirectional"))
             b.append(text_note("Capacitor discharge LED fade", 62, 56))
+            return "".join(b)
+
+
+        def layout_555(ir, blocks):
+            supply = value(role(ir, "supply"), 9.0)
+            v_label = voltage_label(supply)
+            b = ["\n"]
+
+            # Core 555 astable layout. Coordinates are chosen to match the
+            # KiCad Timer:NE555P symbol pin geometry on a 2.54 mm grid.
+            b.append(place_ref(blocks, "U1", 140, 100, 0))
+            b.append(place_ref(blocks, "R1", 104, 93.65, 0))
+            b.append(place_ref(blocks, "R2", 104, 101.27, 0))
+            b.append(place_ref(blocks, "C1", 104, 108.89, 0))
+            b.append(place_ref(blocks, "C2", 116, 89.84, 0))
+            b.append(place_ref(blocks, "R3", 180, 100, 90))
+            b.append(place_ref(blocks, "D1", 195.08, 100, 180))
+            b.append(place_lib(blocks, f"power:{v_label}", 158, 82.22, 0, occurrence=0))
+            b.append(place_lib(blocks, "power:GND", 140, 128, 0, occurrence=0))
+            b.append(place_ref(blocks, "#FLG01", 172, 82.22, 0))
+            b.append(place_ref(blocks, "#FLG02", 126, 128, 0))
+
+            # +V rail: supply, power flag, timing resistor, 555 VCC, and reset.
+            b.append(wire([(104, 89.84), (104, 82.22), (122, 82.22), (142.54, 82.22), (172, 82.22)]))
+            b.append(wire([(142.54, 89.84), (142.54, 82.22)]))
+            b.append(wire([(129.84, 94.92), (122, 94.92), (122, 82.22)]))
+            b.append(label(v_label, 150.16, 82.22, 0, "left", "bidirectional"))
+            b.append(junction(122, 82.22))
+            b.append(junction(142.54, 82.22))
+
+            # Timing network: R1/R2/C1 and the 555 discharge/threshold/trigger pins.
+            b.append(wire([(104, 97.46), (129.84, 97.46)]))
+            b.append(wire([(104, 105.08), (129.84, 105.08)]))
+            b.append(wire([(129.84, 102.54), (124, 102.54), (124, 105.08)]))
+            b.append(junction(104, 97.46))
+            b.append(junction(104, 105.08))
+            b.append(junction(124, 105.08))
+
+            # Control-voltage bypass kept away from the adjacent VCC pin.
+            b.append(wire([(140, 89.84), (140, 86.03), (116, 86.03)]))
+            b.append(wire([(116, 93.65), (116, 128)]))
+
+            # Output LED branch.
+            b.append(wire([(150.16, 100), (176.19, 100)]))
+            b.append(wire([(183.81, 100), (191.27, 100)]))
+            b.append(wire([(198.89, 100), (212, 100), (212, 128)]))
+
+            # Ground rail for the 555, timing capacitor, control capacitor, LED, and flag.
+            b.append(wire([(104, 112.7), (104, 128), (212, 128)]))
+            b.append(wire([(140, 110.16), (140, 128)]))
+            b.append(wire([(126, 128), (140, 128)]))
+            b.append(junction(116, 128))
+            b.append(junction(140, 128))
+            b.append(text_note("555 astable LED blinker", 82, 58))
             return "".join(b)
 
 

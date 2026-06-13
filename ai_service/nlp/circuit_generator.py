@@ -384,6 +384,25 @@ class CircuitGenerator:
                     ".end",
                 ])
 
+        if circuit_type == "generic_circuit":
+            lines = [
+                f"* {circuit_ir.get('title', 'Generic circuit draft')}",
+                "* CIRGPT_GENERIC_CIRCUIT",
+                "* CIRGPT_SIMULATION: not_available",
+                "* Connectivity netlist for an arbitrary natural-language circuit draft.",
+                "",
+            ]
+            for component in circuit_ir.get("components", []):
+                if not isinstance(component, dict):
+                    continue
+                ref = str(component.get("ref") or "X")
+                nodes = [str(node) for node in component.get("nodes", [])]
+                value = str(component.get("value") or component.get("type") or "GENERIC").replace(" ", "_")
+                if nodes:
+                    lines.append(f"{ref} {' '.join(nodes)} {value}")
+            lines.append(".end")
+            return "\n".join(lines)
+
         raise ValueError(f"Unsupported CircuitIR type: {circuit_type}")
 
 

@@ -32,7 +32,7 @@ import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
 import BomViewer from '../../../components/BomViewer';
 import { API_BASE_URL, WEBSOCKET_URL } from '../../../config.mjs';
-import { HybridPollingManager } from '../../../lib/pollingUtils';
+import { PollingManager } from '../../../lib/pollingUtils';
 import { formatUserError } from '../../../lib/errorUtils';
 
 function TabPanel({ children, value, index }) {
@@ -188,7 +188,7 @@ export default function DesignResultPage() {
 
     // 启动轮询（降级方案）
     const startPolling = () => {
-      manager = new (require('../../../lib/pollingUtils').PollingManager)({
+      manager = new PollingManager({
         interval: 2000, // 2秒轮询一次
         maxDuration: 5 * 60 * 1000, // 5分钟超时
         onPoll: async () => {

@@ -57,8 +57,8 @@ class HealthService:
         """检查AI服务连接"""
         try:
             import httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{settings.AI_SERVICE_URL}/api/health")
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                response = await client.get(f"{settings.AI_SERVICE_URL}/api/health/")
                 response.raise_for_status()
                 return {"status": "ok", "message": "AI service connection successful"}
         except Exception as e:
@@ -68,8 +68,8 @@ class HealthService:
         """检查EDA服务连接"""
         try:
             import httpx
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{settings.EDA_SERVICE_URL}/api/health")
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                response = await client.get(f"{settings.EDA_SERVICE_URL}/api/health/")
                 response.raise_for_status()
                 return {"status": "ok", "message": "EDA service connection successful"}
         except Exception as e:

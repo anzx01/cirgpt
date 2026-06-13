@@ -57,6 +57,9 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
         if deepseek_configured():
             try:
                 requirements = await parse_description_with_deepseek(request.description)
+                if not requirements.get("supported", False) and request.description.strip():
+                    requirements = parse_description_to_ir(request.description)
+                    parser_warnings.append("DeepSeek returned an unsupported result; generic rule-based draft was used.")
             except Exception as exc:
                 logger.warning(f"DeepSeek parsing failed, falling back to rule parser: {exc}")
                 requirements = parse_description_to_ir(request.description)
@@ -73,7 +76,7 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
             success=requirements.get("supported", False),
             message="Successfully parsed natural language description"
             if requirements.get("supported", False)
-            else "Request is outside the v1 supported circuit set"
+            else "Description is empty or not a circuit request"
         )
 
     except Exception as e:

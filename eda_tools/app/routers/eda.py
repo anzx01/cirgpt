@@ -94,6 +94,27 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
         logger.info("Generating schematic with industrial-grade pipeline")
 
         if request.circuit_ir:
+            if request.circuit_ir.get("circuit_type") == "generic_circuit":
+                svg = generate_ir_schematic_svg(request.circuit_ir)
+                if svg:
+                    summary = {
+                        "title": request.circuit_ir.get("title", "Circuit"),
+                        "components": len(request.circuit_ir.get("components", [])),
+                        "nets": len(request.circuit_ir.get("nets", [])),
+                        "algorithm": "CircuitIR generic block/connectivity renderer",
+                        "generator": "generic-ir-svg",
+                    }
+                    return {
+                        "success": True,
+                        "message": "Generic CircuitIR schematic generated",
+                        "svg": svg,
+                        "summary": summary,
+                        "generator": "generic-ir-svg",
+                        "warnings": [
+                            "Generic schematic is a conceptual connectivity draft; run engineering review before implementation."
+                        ],
+                    }
+
             try:
                 kicad_result = generate_kicad_artifacts(request.circuit_ir)
                 if kicad_result.get("svg"):
@@ -190,6 +211,23 @@ async def simulate_circuit_endpoint(request: SimulationRequest) -> Dict[str, Any
     """
     try:
         logger.info("Running circuit simulation")
+
+        if "CIRGPT_SIMULATION: not_available" in request.netlist:
+            return {
+                "success": True,
+                "results": {
+                    "status": "degraded",
+                    "analysis_type": "not_run",
+                    "time": [],
+                    "voltages": {},
+                    "currents": {},
+                    "simulation_time": 0,
+                    "nodes": [],
+                    "degraded": True,
+                    "message": "Simulation is not available for generic natural-language circuit drafts.",
+                    "summary": {},
+                },
+            }
 
         results = simulate_circuit(request.netlist)
 

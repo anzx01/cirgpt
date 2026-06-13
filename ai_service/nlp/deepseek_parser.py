@@ -35,6 +35,7 @@ REQUIRED_ROLES = {
     },
     "opamp_inverting": {"input_resistor", "feedback"},
     "opamp_non_inverting": {"gain_ground", "feedback"},
+    "generic_circuit": set(),
 }
 
 
@@ -82,9 +83,34 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
         raise ValueError("CircuitIR must be a JSON object")
 
     circuit_type = str(ir.get("circuit_type", "unsupported"))
-    supported = bool(ir.get("supported", circuit_type in SUPPORTED_TYPES))
+    source = ir.get("source") if isinstance(ir.get("source"), dict) else {}
+    raw_components = ir.get("components")
+    has_components = isinstance(raw_components, list) and any(isinstance(item, dict) for item in raw_components)
+    supported = bool(ir.get("supported", circuit_type in SUPPORTED_TYPES or has_components))
 
     if not supported or circuit_type == "unsupported":
+        if has_components and description.strip():
+            circuit_type = "generic_circuit"
+            supported = True
+        else:
+            return {
+                "schema_version": "1.0",
+                "supported": False,
+                "circuit_type": "unsupported",
+                "title": str(ir.get("title") or "Unsupported circuit request"),
+                "description": description,
+                "components": [],
+                "nets": [],
+                "constraints": dict(ir.get("constraints") or {"supported_circuit_types": SUPPORTED_TYPES}),
+                "source": {"mode": source_mode, "rationale": _as_string_list(source.get("rationale", []))},
+                "warnings": _as_string_list(ir.get("warnings", ["Unsupported circuit request"])),
+            }
+
+    if circuit_type not in SUPPORTED_TYPES:
+        circuit_type = "generic_circuit"
+
+    components = _normalize_components(ir.get("components"))
+    if not components:
         return {
             "schema_version": "1.0",
             "supported": False,
@@ -94,16 +120,9 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
             "components": [],
             "nets": [],
             "constraints": dict(ir.get("constraints") or {"supported_circuit_types": SUPPORTED_TYPES}),
-            "source": {"mode": source_mode, "rationale": _as_string_list(ir.get("source", {}).get("rationale", []))},
-            "warnings": _as_string_list(ir.get("warnings", ["Unsupported circuit request"])),
+            "source": {"mode": source_mode, "rationale": _as_string_list(source.get("rationale", []))},
+            "warnings": _as_string_list(ir.get("warnings", ["CircuitIR did not include components."])),
         }
-
-    if circuit_type not in SUPPORTED_TYPES:
-        raise ValueError(f"Unsupported CircuitIR type from model: {circuit_type}")
-
-    components = ir.get("components")
-    if not isinstance(components, list):
-        raise ValueError("CircuitIR components must be a list")
 
     roles = {str(component.get("role")) for component in components if isinstance(component, dict)}
     missing = REQUIRED_ROLES.get(circuit_type, set()) - roles
@@ -122,9 +141,7 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
         "source": {
             "mode": source_mode,
             "model": settings.DEEPSEEK_MODEL if source_mode == "deepseek" else None,
-            "rationale": _as_string_list(ir.get("source", {}).get("rationale", []))
-            if isinstance(ir.get("source"), dict)
-            else [],
+            "rationale": _as_string_list(source.get("rationale", [])),
         },
         "warnings": _as_string_list(ir.get("warnings", [])),
     }
@@ -140,7 +157,7 @@ CircuitIR schema:
 {
   "schema_version": "1.0",
   "supported": true,
-  "circuit_type": "one supported type",
+  "circuit_type": "one supported type or generic_circuit",
   "title": "short title",
   "description": "original request",
   "components": [
@@ -153,11 +170,30 @@ CircuitIR schema:
 }
 
 Use SI base values: ohm, F, V, A, Hz. Ground node is "0".
-Only choose these supported circuit_type values:
+Convert prefixes into base values: 100 uF is value=0.0001 unit="F",
+100 nF is value=1e-7 unit="F", 10 kOhm is value=10000 unit="ohm".
+For exact known templates, choose one of these circuit_type values:
 led_current_limiter, capacitor_discharge_led, rc_low_pass_filter,
 555_timer_blinker, opamp_inverting, opamp_non_inverting.
-If the request cannot be mapped to one supported type, return supported=false
-and circuit_type="unsupported".
+Use a template type only when the user explicitly asks for that topology
+(for example 555/timer/blinker/astable for 555_timer_blinker, op-amp/gain for
+op-amp amplifiers, LED current limiting for LED limiters, or RC low-pass/filter
+for an RC filter). Do not force a general controller, sensor interface, motor
+driver, relay driver, power supply, charger, or automation request into one of
+the template types.
+For any other non-empty real circuit request, return supported=true and
+circuit_type="generic_circuit". Build a conceptual component-level draft with
+named components, node connections, constraints, rationale, and warnings.
+Do not reject a request solely because it is outside the template list.
+Return supported=false and circuit_type="unsupported" only for empty or
+non-circuit requests.
+
+For automatic watering / irrigation / soil moisture requests, prefer a closed
+loop draft: power input, soil moisture sensor, threshold/comparator or
+microcontroller, pullups/filtering, MOSFET or relay pump/valve driver, flyback
+diode, pump/solenoid/load connector, and optional indicator LED. Do not replace
+the requested sensor controller with a timer-only circuit unless the user asks
+for timer-only watering.
 
 Required component roles by circuit type:
 - led_current_limiter: supply, current_limit, indicator
@@ -170,6 +206,8 @@ Required component roles by circuit type:
   positive_supply, negative_supply
 - opamp_non_inverting: input_signal, amplifier, gain_ground, feedback,
   positive_supply, negative_supply
+- generic_circuit: include at least a supply and the main input/control/load
+  components implied by the request when applicable.
 
 For 555 astable requests, include timing values:
 R_A on role timing_ra, R_B on role timing_rb, timing C on timing_capacitor,
@@ -185,6 +223,39 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, Iterable):
         return [str(item) for item in value if item is not None]
     return []
+
+
+def _normalize_components(value: Any) -> list[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    components: list[Dict[str, Any]] = []
+    for index, component in enumerate(value, start=1):
+        if not isinstance(component, dict):
+            continue
+
+        nodes = component.get("nodes")
+        if not isinstance(nodes, list):
+            nodes = []
+        nodes = [str(node) for node in nodes if node is not None]
+        if not nodes:
+            continue
+
+        ref = str(component.get("ref") or f"X{index}")
+        ctype = str(component.get("type") or "module")
+        role = str(component.get("role") or ctype)
+        unit = str(component.get("unit") or "")
+
+        components.append({
+            "ref": ref,
+            "type": ctype,
+            "value": component.get("value", ""),
+            "unit": unit,
+            "nodes": nodes,
+            "role": role,
+        })
+
+    return components
 
 
 def _nets_from_components(components: list[Dict[str, Any]]) -> list[Dict[str, Any]]:

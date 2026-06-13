@@ -24,6 +24,11 @@ class BOMGenerator:
             "Transistor": 0.20,
             "IC": 0.50,
             "Switch": 0.30,
+            "Connector": 0.20,
+            "Relay": 1.20,
+            "Motor": 3.00,
+            "Module": 1.50,
+            "Sensor": 1.25,
             "Voltage Source": 0.00,
             "Current Source": 0.00
         }
@@ -135,7 +140,9 @@ class BOMGenerator:
             return 3
         if prefix == "S" and len(parts) >= 6:
             return 5
-        if prefix in {"Q", "M", "J"} and len(parts) >= 5:
+        if prefix in {"J", "K", "M", "X"} and len(parts) >= 2:
+            return len(parts) - 1
+        if prefix in {"Q"} and len(parts) >= 5:
             return 4
         if prefix in {"U", "X"} and len(parts) >= 2:
             return len(parts) - 1
@@ -162,13 +169,32 @@ class BOMGenerator:
             "Q": "Transistor",
             "S": "Switch",
             "U": "IC",
+            "J": "Connector",
+            "K": "Relay",
+            "M": "Motor",
+            "X": "Module",
             "V": "Voltage Source",
             "I": "Current Source"
         }
 
         # Check for LED specifically
-        if "led" in value.lower():
+        lower_value = value.lower()
+        if prefix == "J":
+            return "Connector"
+        if prefix == "K":
+            return "Relay"
+        if prefix == "M":
+            return "Motor"
+        if "led" in lower_value:
             return "LED"
+        if "sensor" in lower_value:
+            return "Sensor"
+        if "pump" in lower_value or "motor" in lower_value or "fan" in lower_value:
+            return "Motor"
+        if "relay" in lower_value:
+            return "Relay"
+        if "connector" in lower_value or "terminal" in lower_value:
+            return "Connector"
 
         return type_map.get(prefix, "Unknown")
 
@@ -288,6 +314,11 @@ class BOMGenerator:
             "Transistor": "THT, TO-92",
             "IC": "THT, DIP-8",
             "Switch": "THT, Momentary Pushbutton",
+            "Connector": "Screw terminal / pin header",
+            "Relay": "THT, relay module",
+            "Motor": "External load / terminal block",
+            "Module": "Module / header",
+            "Sensor": "Module / header",
             "Voltage Source": "N/A",
             "Current Source": "N/A"
         }

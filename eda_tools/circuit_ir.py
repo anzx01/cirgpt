@@ -4,6 +4,7 @@ CircuitIR helpers for the KiCad-first MVP.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -65,6 +66,8 @@ def generate_spice_netlist(ir: Dict[str, Any]) -> str:
         return _timer_netlist(ir)
     if circuit_type in {"opamp_inverting", "opamp_non_inverting"}:
         return _opamp_netlist(ir)
+    if circuit_type == "generic_circuit":
+        return _generic_netlist(ir)
 
     raise ValueError(f"Unsupported CircuitIR type: {circuit_type}")
 
@@ -228,6 +231,147 @@ def _opamp_netlist(ir: Dict[str, Any]) -> str:
         ".end",
     ])
     return "\n".join(lines)
+
+
+def _generic_netlist(ir: Dict[str, Any]) -> str:
+    lines = _header(ir)
+    lines.extend([
+        "* CIRGPT_GENERIC_CIRCUIT",
+        "* CIRGPT_SIMULATION: not_available",
+        "* Connectivity netlist for an arbitrary natural-language circuit draft.",
+        "* It is intended for schematic/BOM/PCB preview, not direct ngspice simulation.",
+        "",
+    ])
+
+    used_refs: set[str] = set()
+    counters: Dict[str, int] = {}
+    for component in ir.get("components", []):
+        line = _generic_component_line(component, counters, used_refs)
+        if line:
+            lines.append(line)
+
+    nets = ir.get("nets") or []
+    if nets:
+        lines.extend(["", "* Nets"])
+        for net in nets:
+            if not isinstance(net, dict):
+                continue
+            name = _safe_node(net.get("name", "NET"))
+            connections = ", ".join(str(item) for item in net.get("connections", []))
+            lines.append(f"* {name}: {connections}")
+
+    lines.append(".end")
+    return "\n".join(lines)
+
+
+def _generic_component_line(
+    component: Dict[str, Any],
+    counters: Dict[str, int],
+    used_refs: set[str],
+) -> str:
+    if not isinstance(component, dict):
+        return ""
+
+    ctype = str(component.get("type", "module")).lower()
+    nodes = [_safe_node(node) for node in component.get("nodes", []) if node is not None]
+    if not nodes:
+        return ""
+
+    prefix = _generic_prefix(ctype)
+    ref = _safe_ref(str(component.get("ref") or ""), prefix, counters, used_refs)
+    value = _generic_component_value(component)
+
+    if prefix == "V":
+        n1, n2 = _pad_nodes(nodes, 2)
+        return f"{ref} {n1} {n2} DC {value}"
+    if prefix in {"R", "C", "L"}:
+        n1, n2 = _pad_nodes(nodes, 2)
+        return f"{ref} {n1} {n2} {value}"
+    if prefix == "D":
+        n1, n2 = _pad_nodes(nodes, 2)
+        if "led" in ctype and "led" not in value.lower():
+            value = "LED"
+        return f"{ref} {n1} {n2} {value}"
+    if prefix == "Q":
+        n1, n2, n3 = _pad_nodes(nodes, 3)
+        return f"{ref} {n1} {n2} {n3} {value}"
+    if prefix == "S":
+        n1, n2, n3, n4 = _pad_nodes(nodes, 4)
+        return f"{ref} {n1} {n2} {n3} {n4} {value}"
+
+    return f"{ref} {' '.join(nodes)} {value}"
+
+
+def _generic_prefix(component_type: str) -> str:
+    if "voltage" in component_type or component_type in {"supply", "power_source"}:
+        return "V"
+    if "resistor" in component_type:
+        return "R"
+    if "capacitor" in component_type:
+        return "C"
+    if "inductor" in component_type:
+        return "L"
+    if "led" in component_type or "diode" in component_type:
+        return "D"
+    if any(token in component_type for token in ("transistor", "mosfet", "nmos", "pmos", "bjt")):
+        return "Q"
+    if "switch" in component_type:
+        return "S"
+    if "motor" in component_type or "pump" in component_type or "fan" in component_type:
+        return "M"
+    if "relay" in component_type:
+        return "K"
+    if "connector" in component_type or "terminal" in component_type:
+        return "J"
+    if any(token in component_type for token in ("ic", "controller", "comparator", "opamp", "timer", "microcontroller", "sensor")):
+        return "U"
+    return "X"
+
+
+def _safe_ref(ref: str, prefix: str, counters: Dict[str, int], used_refs: set[str]) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", ref.strip())
+    if not cleaned or not cleaned[0].isalpha():
+        cleaned = ""
+
+    if cleaned and cleaned[0].upper() == prefix and cleaned.upper() not in used_refs:
+        used_refs.add(cleaned.upper())
+        return cleaned
+
+    while True:
+        counters[prefix] = counters.get(prefix, 0) + 1
+        candidate = f"{prefix}{counters[prefix]}"
+        if candidate.upper() not in used_refs:
+            used_refs.add(candidate.upper())
+            return candidate
+
+
+def _safe_node(node: Any) -> str:
+    text = str(node).strip()
+    if text.lower() in {"gnd", "ground", "earth"}:
+        return "0"
+    text = re.sub(r"[^A-Za-z0-9_+-]", "_", text)
+    return text or "NET"
+
+
+def _pad_nodes(nodes: list[str], count: int) -> list[str]:
+    padded = list(nodes[:count])
+    while len(padded) < count:
+        padded.append("0")
+    return padded
+
+
+def _generic_component_value(component: Dict[str, Any]) -> str:
+    value = component.get("value", "")
+    unit = str(component.get("unit") or "")
+    if isinstance(value, (int, float)) and unit in {"ohm", "F"}:
+        return _spice_value(float(value), unit)
+    if isinstance(value, (int, float)):
+        return f"{float(value):g}"
+
+    text = str(value or component.get("type") or "GENERIC")
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r"[^A-Za-z0-9_.+-]", "_", text)
+    return text or "GENERIC"
 
 
 def generate_kicad_pcb_preview(ir: Dict[str, Any]) -> str:

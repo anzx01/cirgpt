@@ -4,10 +4,10 @@ from app.routers import ai, eda, health, circuit
 from app.config import settings
 from app.websocket.socket_manager import socket_manager
 
-app = FastAPI(title="Circuit Design API Gateway", version="1.0.0")
+api_app = FastAPI(title="Circuit Design API Gateway", version="1.0.0")
 
 # 配置CORS
-app.add_middleware(
+api_app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS_LIST,
     allow_credentials=True,
@@ -16,10 +16,10 @@ app.add_middleware(
 )
 
 # 注册路由
-app.include_router(health.router, prefix="/api/health", tags=["health"])
-app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
-app.include_router(eda.router, prefix="/api/eda", tags=["eda"])
-app.include_router(circuit.router, prefix="/api/circuit", tags=["circuit"])
+api_app.include_router(health.router, prefix="/api/health", tags=["health"])
+api_app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
+api_app.include_router(eda.router, prefix="/api/eda", tags=["eda"])
+api_app.include_router(circuit.router, prefix="/api/circuit", tags=["circuit"])
 
 # Mount Socket.io server when the optional dependency is installed.
 try:
@@ -27,11 +27,15 @@ try:
 except ImportError:
     ASGIApp = None
 
+app = api_app
 if ASGIApp is not None and socket_manager.get_app() is not None:
-    socket_app = ASGIApp(socket_manager.get_app())
-    app.mount("/socket.io", socket_app)
+    app = ASGIApp(
+        socket_manager.get_app(),
+        other_asgi_app=api_app,
+        socketio_path="socket.io",
+    )
 
-@app.get("/")
+@api_app.get("/")
 async def root():
     return {
         "message": "Circuit Design API Gateway",
