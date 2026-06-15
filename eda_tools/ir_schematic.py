@@ -55,6 +55,8 @@ def generate_ir_schematic_svg(ir: Dict[str, Any]) -> str:
     if circuit_type == "capacitor_discharge_led":
         return _render_capacitor_discharge_led(ir)
     if circuit_type == "generic_circuit":
+        if _is_sensor_driver_controller(ir):
+            return _render_sensor_driver_controller(ir)
         return _render_generic_circuit(ir)
     return ""
 
@@ -265,6 +267,199 @@ def _render_capacitor_discharge_led(ir: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _is_sensor_driver_controller(ir: Dict[str, Any]) -> bool:
+    components = ir.get("components", [])
+    text = " ".join(
+        f"{component.get('ref', '')} {component.get('type', '')} {component.get('role', '')}"
+        for component in components
+        if isinstance(component, dict)
+    ).lower()
+    has_sensor = "sensor" in text
+    has_controller = any(token in text for token in ("comparator", "microcontroller", "controller", "opamp"))
+    has_driver = any(token in text for token in ("mosfet", "transistor", "nmos", "pmos", "relay", "driver"))
+    has_load = any(token in text for token in ("pump", "solenoid", "valve", "motor", "fan", "load"))
+    return has_sensor and has_controller and has_driver and has_load
+
+
+def _render_sensor_driver_controller(ir: Dict[str, Any]) -> str:
+    comps = [component for component in ir.get("components", []) if isinstance(component, dict)]
+    title = str(ir.get("title") or "Sensor driver controller")
+    lines = _svg_start(1180, 720, title)
+    _label(lines, "LLM parsed CircuitIR schematic draft. Verify topology, values, and ratings before building.", 24, 58, "small")
+
+    supply = _find_component(comps, roles=("supply", "positive_supply"), types=("voltage_source",))
+    sensor = _find_component(comps, roles=("sensor", "sensor_connector"), types=("sensor", "soil"))
+    pullup = _find_component(comps, roles=("pullup", "sensor_pullup", "input_bias"), types=("resistor",))
+    filt = _find_component(comps, roles=("filter", "sensor_filter"), types=("capacitor",))
+    controller = _find_component(comps, roles=("threshold", "controller", "comparator"), types=("comparator", "opamp", "controller"))
+    threshold_parts = [
+        component for component in comps
+        if component.get("ref") not in {pullup.get("ref") if pullup else None}
+        and "threshold" in str(component.get("role", "")).lower()
+        and str(component.get("type", "")).lower() == "resistor"
+    ]
+    r_top = threshold_parts[0] if threshold_parts else _find_component(comps, roles=("threshold_high", "threshold_ra"), types=("resistor",))
+    r_bottom = threshold_parts[1] if len(threshold_parts) > 1 else _find_component(comps, roles=("threshold_low", "threshold_rb"), types=("resistor",))
+    driver = _find_component(comps, roles=("driver", "mosfet_driver", "low_side_switch"), types=("nmos", "mosfet", "transistor"))
+    flyback = _find_component(comps, roles=("flyback", "flyback_diode"), types=("diode",))
+    load = _find_component(comps, roles=("pump", "load", "actuator"), types=("pump", "motor", "solenoid", "valve"))
+    indicator = _find_component(comps, roles=("indicator",), types=("led",))
+    led_res = _find_component(comps, roles=("led_resistor", "indicator_resistor"), types=("resistor",), exclude={pullup.get("ref") if pullup else "", r_top.get("ref") if r_top else "", r_bottom.get("ref") if r_bottom else ""})
+
+    _supply(lines, _ref(supply, "V1"), _component_value(supply, "5 V"), 95, 155)
+    _power_marker(lines, "VCC", 95, 105)
+
+    sense_node = (330, 230)
+    sensor_x, sensor_y = 210, 160
+    lines.append(f'<rect class="symbol" x="{sensor_x}" y="{sensor_y}" width="130" height="64" rx="4" />')
+    lines.append(f'<path class="symbol" d="M {sensor_x + 24} {sensor_y + 34} C {sensor_x + 42} {sensor_y + 14}, {sensor_x + 58} {sensor_y + 54}, {sensor_x + 76} {sensor_y + 34} S {sensor_x + 108} {sensor_y + 34}, {sensor_x + 118} {sensor_y + 34}" />')
+    _label(lines, _ref(sensor, "SENSOR"), sensor_x + 65, sensor_y + 18, "label", "middle")
+    _label(lines, _short_text(str(sensor.get("type") if sensor else "sensor"), 22), sensor_x + 65, sensor_y + 86, "small", "middle")
+    _wire(lines, [(sensor_x + 130, sensor_y + 32), sense_node])
+    _wire(lines, [(sensor_x + 70, sensor_y + 64), (sensor_x + 70, sensor_y + 82)])
+    _ground(lines, sensor_x + 70, sensor_y + 82)
+    _junction(lines, *sense_node)
+
+    if pullup:
+        _resistor(lines, _ref(pullup, "RPU"), _component_value(pullup, "10 kOhm"), 360, 118, False)
+        _power_marker(lines, "VCC", 360, 112)
+        _wire(lines, [(360, 204), (360, sense_node[1]), sense_node])
+
+    if filt:
+        _capacitor(lines, _ref(filt, "CFILT"), _component_value(filt, "100 nF"), 300, 250, False)
+        _wire(lines, [sense_node, (300, 250), (300, 286)])
+        _ground(lines, 300, 300)
+
+    comp_x, comp_y = 460, 245
+    _draw_opamp_symbol(lines, _ref(controller, "U1"), _component_value(controller, "comparator"), comp_x, comp_y)
+    _wire(lines, [sense_node, (comp_x, comp_y + 34)])
+
+    thresh_node = (390, 430)
+    if r_top:
+        _resistor(lines, _ref(r_top, "RTH1"), _component_value(r_top, "10 kOhm"), 390, 330, False)
+        _power_marker(lines, "VCC", 390, 324)
+        _wire(lines, [(390, 416), thresh_node])
+    if r_bottom:
+        _resistor(lines, _ref(r_bottom, "RTH2"), _component_value(r_bottom, "10 kOhm"), 390, 455, False)
+        _wire(lines, [thresh_node, (390, 455)])
+        _wire(lines, [(390, 541), (390, 560)])
+        _ground(lines, 390, 560)
+    _wire(lines, [thresh_node, (430, thresh_node[1]), (430, comp_y + 74), (comp_x, comp_y + 74)])
+    _label(lines, "THRESH", thresh_node[0] - 50, thresh_node[1] - 8, "net")
+
+    out = (comp_x + 146, comp_y + 54)
+    gate = (740, 300)
+    _wire(lines, [out, (660, out[1]), (660, gate[1]), gate])
+    _label(lines, "CTRL", 640, gate[1] - 10, "net")
+
+    _draw_nmos_symbol(lines, _ref(driver, "Q1"), _component_value(driver, "NMOS"), 740, 245)
+    _wire(lines, [(805, 245), (805, 190), (960, 190)])
+    _label(lines, "PUMP_DRV", 825, 180, "net")
+    _wire(lines, [(805, 349), (805, 380)])
+    _ground(lines, 805, 380)
+
+    _draw_motor_symbol(lines, _ref(load, "LOAD"), _component_value(load, "pump"), 960, 150)
+    _power_marker(lines, "VCC", 1040, 150)
+    _wire(lines, [(960, 190), (925, 190), (925, 245), (805, 245)])
+
+    if flyback:
+        _draw_diode_vertical(lines, _ref(flyback, "D1"), _component_value(flyback, "diode"), 910, 150, 250)
+        _wire(lines, [(910, 150), (1040, 150)])
+        _wire(lines, [(910, 250), (925, 250), (925, 190)])
+
+    if indicator and led_res:
+        _resistor(lines, _ref(led_res, "RLED"), _component_value(led_res, "330 Ohm"), 720, 475, True)
+        _led(lines, _ref(indicator, "LED"), 585, 475)
+        _power_marker(lines, "VCC", 585, 475)
+        _wire(lines, [(623, 475), (720, 475)])
+        _wire(lines, [(806, 475), (840, 475), (840, gate[1]), gate])
+
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def _find_component(
+    components: list[Dict[str, Any]],
+    roles: tuple[str, ...] = (),
+    types: tuple[str, ...] = (),
+    exclude: set[str] | None = None,
+) -> Optional[Dict[str, Any]]:
+    exclude = exclude or set()
+    for component in components:
+        if str(component.get("ref", "")) in exclude:
+            continue
+        role = str(component.get("role", "")).lower()
+        ctype = str(component.get("type", "")).lower()
+        if roles and any(role_name in role for role_name in roles):
+            return component
+        if types and any(type_name in ctype for type_name in types):
+            return component
+    return None
+
+
+def _ref(component: Optional[Dict[str, Any]], default: str) -> str:
+    return str(component.get("ref") if component else default)
+
+
+def _component_value(component: Optional[Dict[str, Any]], default: str) -> str:
+    if not component:
+        return default
+    value = _generic_value_text(component)
+    return _short_text(value or _generic_fallback_value(component) or default, 24)
+
+
+def _draw_opamp_symbol(lines: list[str], ref: str, value: str, x: int, y: int) -> None:
+    w, h = 146, 108
+    points = f"{x + 20},{y + 14} {x + 20},{y + h - 14} {x + w - 18},{y + h // 2}"
+    lines.append(f'<polygon class="symbol" points="{points}" />')
+    _wire(lines, [(x, y + 34), (x + 20, y + 34)])
+    _wire(lines, [(x, y + h - 34), (x + 20, y + h - 34)])
+    _wire(lines, [(x + w - 18, y + h // 2), (x + w, y + h // 2)])
+    _power_marker(lines, "VCC", x + w // 2, y)
+    _wire(lines, [(x + w // 2, y + h - 22), (x + w // 2, y + h)])
+    _ground(lines, x + w // 2, y + h)
+    _label(lines, "+", x + 26, y + 39)
+    _label(lines, "-", x + 28, y + h - 29)
+    _label(lines, ref, x + 58, y + h // 2 - 8)
+    _label(lines, value, x + 52, y + h // 2 + 12, "small")
+
+
+def _draw_nmos_symbol(lines: list[str], ref: str, value: str, x: int, y: int) -> None:
+    w, h = 130, 104
+    cx = x + w // 2
+    gate_x = x + 32
+    _wire(lines, [(cx, y), (cx, y + 24)])
+    _wire(lines, [(cx, y + h - 24), (cx, y + h)])
+    lines.append(f'<line class="symbol" x1="{cx}" y1="{y + 24}" x2="{cx}" y2="{y + h - 24}" />')
+    lines.append(f'<line class="symbol" x1="{gate_x}" y1="{y + 26}" x2="{gate_x}" y2="{y + h - 26}" />')
+    _wire(lines, [(x, y + h // 2), (gate_x, y + h // 2)])
+    lines.append(f'<line class="symbol" x1="{gate_x + 16}" y1="{y + 34}" x2="{cx - 8}" y2="{y + 34}" />')
+    lines.append(f'<line class="symbol" x1="{gate_x + 16}" y1="{y + h - 34}" x2="{cx - 8}" y2="{y + h - 34}" />')
+    _label(lines, ref, x + 54, y + 48)
+    _label(lines, value, x + 42, y + 66, "small")
+
+
+def _draw_motor_symbol(lines: list[str], ref: str, value: str, x: int, y: int) -> None:
+    cx = x + 40
+    cy = y + 40
+    _wire(lines, [(x, cy), (cx - 31, cy)])
+    _wire(lines, [(cx + 31, cy), (x + 105, cy)])
+    lines.append(f'<circle class="symbol" cx="{cx}" cy="{cy}" r="31" />')
+    _label(lines, "M", cx - 7, cy + 5)
+    _label(lines, ref, x + 16, y - 8)
+    _label(lines, value, x + 8, y + 92, "small")
+
+
+def _draw_diode_vertical(lines: list[str], ref: str, value: str, x: int, y1: int, y2: int) -> None:
+    mid = (y1 + y2) // 2
+    _wire(lines, [(x, y1), (x, mid - 28)])
+    lines.append(f'<polygon class="symbol" points="{x - 22},{mid - 28} {x + 22},{mid - 28} {x},{mid + 10}" />')
+    lines.append(f'<line class="symbol" x1="{x - 24}" y1="{mid + 16}" x2="{x + 24}" y2="{mid + 16}" />')
+    _wire(lines, [(x, mid + 16), (x, y2)])
+    _label(lines, ref, x + 28, mid - 8)
+    _label(lines, value, x + 28, mid + 10, "small")
+
+
 def _render_generic_circuit(ir: Dict[str, Any]) -> str:
     components = [component for component in ir.get("components", []) if isinstance(component, dict)]
     if not components:
@@ -328,6 +523,7 @@ def _generic_symbol_size(component: Dict[str, Any]) -> tuple[int, int]:
         "transistor": (130, 104),
         "opamp": (146, 108),
         "ic": (150, 122),
+        "sensor": (132, 78),
         "connector": (118, 90),
         "motor": (118, 82),
         "switch": (120, 62),
@@ -340,8 +536,6 @@ def _generic_symbol_kind(component: Dict[str, Any]) -> str:
     role = str(component.get("role") or "").lower()
     ctype = str(component.get("type") or "").lower()
     text = f"{role} {ctype}"
-    if ref.startswith("V") or "voltage" in text or "supply" in text:
-        return "source"
     if ref.startswith("R") or "resistor" in text:
         return "resistor"
     if ref.startswith("C") or "capacitor" in text:
@@ -350,13 +544,17 @@ def _generic_symbol_kind(component: Dict[str, Any]) -> str:
         return "diode"
     if ref.startswith("Q") or any(token in text for token in ("mosfet", "transistor", "nmos", "pmos", "bjt")):
         return "transistor"
+    if ref.startswith("V") or ctype in {"voltage_source", "power_source"} or role in {"supply", "positive_supply", "negative_supply"}:
+        return "source"
     if "comparator" in text or "opamp" in text or "op-amp" in text:
         return "opamp"
+    if ref.startswith("M") or any(token in text for token in ("motor", "pump", "fan", "solenoid", "valve", "load", "actuator")):
+        return "motor"
+    if "sensor" in text:
+        return "sensor"
     if ref.startswith("J") or "connector" in text or "terminal" in text:
         return "connector"
-    if ref.startswith("M") or any(token in text for token in ("motor", "pump", "fan", "solenoid", "valve")):
-        return "motor"
-    if ref.startswith("S") or "switch" in text:
+    if ref.startswith("SW") or "switch" in text:
         return "switch"
     if ref.startswith("U") or any(token in text for token in ("controller", "microcontroller", "timer", "ic", "sensor")):
         return "ic"
@@ -386,11 +584,13 @@ def _generic_symbol_pins(component: Dict[str, Any], x: int, y: int, w: int, h: i
         ]
 
     if kind == "transistor":
-        padded = (nodes + ["0", "0"])[:3]
+        gate = nodes[0]
+        source = next((node for node in nodes[1:] if _is_ground_net(node)), nodes[1] if len(nodes) > 1 else "0")
+        drain = next((node for node in nodes[1:] if node != source), nodes[2] if len(nodes) > 2 else "0")
         return [
-            {"net": padded[0], "x": x + w // 2, "y": y, "label": "D/C"},
-            {"net": padded[1], "x": x, "y": y + h // 2, "label": "G/B"},
-            {"net": padded[2], "x": x + w // 2, "y": y + h, "label": "S/E"},
+            {"net": drain, "x": x + w // 2, "y": y, "label": "D/C"},
+            {"net": gate, "x": x, "y": y + h // 2, "label": "G/B"},
+            {"net": source, "x": x + w // 2, "y": y + h, "label": "S/E"},
         ]
 
     if kind == "opamp":
@@ -424,18 +624,6 @@ def _render_generic_wires(
     width: int,
     height: int,
 ) -> None:
-    vcc_y = 82
-    gnd_y = height - 54
-    rail_left = 38
-    rail_right = width - 38
-
-    if any(_is_power_net(net) for net in pin_map):
-        _wire(lines, [(rail_left, vcc_y), (rail_right, vcc_y)])
-        _label(lines, "VCC", rail_left + 8, vcc_y - 10, "net")
-    if any(_is_ground_net(net) for net in pin_map):
-        _wire(lines, [(rail_left, gnd_y), (rail_right, gnd_y)])
-        _label(lines, "0 / GND", rail_left + 8, gnd_y - 10, "net")
-
     for net, raw_points in sorted(pin_map.items()):
         points = [point for index, point in enumerate(raw_points) if point not in raw_points[:index]]
         if not points:
@@ -443,25 +631,28 @@ def _render_generic_wires(
 
         if _is_power_net(net):
             for x, y in points:
-                _wire(lines, [(x, vcc_y), (x, y)])
+                _power_marker(lines, str(net), x, y)
                 _junction(lines, x, y)
             continue
 
         if _is_ground_net(net):
             for x, y in points:
-                _wire(lines, [(x, y), (x, gnd_y)])
+                _wire(lines, [(x, y), (x, y + 16)])
+                _ground(lines, x, y + 16)
                 _junction(lines, x, y)
             continue
 
         if len(points) < 2:
             continue
 
-        base = points[0]
-        for index, point in enumerate(points[1:], start=1):
-            mid_x = int((base[0] + point[0]) / 2)
-            _wire(lines, [base, (mid_x, base[1]), (mid_x, point[1]), point])
-            if index == 1:
-                _label(lines, _short_text(str(net), 18), mid_x + 4, min(base[1], point[1]) - 6, "net")
+        routed = sorted(points, key=lambda point: (point[0], point[1]))
+        for index in range(len(routed) - 1):
+            start = routed[index]
+            end = routed[index + 1]
+            mid_x = int((start[0] + end[0]) / 2)
+            _wire(lines, [start, (mid_x, start[1]), (mid_x, end[1]), end])
+            if index == 0:
+                _label(lines, _short_text(str(net), 18), mid_x + 4, min(start[1], end[1]) - 6, "net")
         for x, y in points:
             _junction(lines, x, y)
 
@@ -477,7 +668,7 @@ def _draw_generic_symbol(
 ) -> None:
     kind = _generic_symbol_kind(component)
     ref = str(component.get("ref") or "?")
-    value = _short_text(_generic_value_text(component) or str(component.get("type") or ""), 22)
+    value = _short_text(_generic_value_text(component) or _generic_fallback_value(component), 22)
 
     if kind == "source":
         cx = x + w // 2
@@ -552,6 +743,14 @@ def _draw_generic_symbol(
         _label(lines, "M", cx - 7, cy + 5)
         _label(lines, ref, x + 34, y - 8)
         _label(lines, value, x + 20, y + h + 18, "small")
+    elif kind == "sensor":
+        cy = y + h // 2
+        _wire(lines, [(x, cy), (x + 18, cy)])
+        _wire(lines, [(x + w - 18, cy), (x + w, cy)])
+        lines.append(f'<rect class="symbol" x="{x + 18}" y="{y + 12}" width="{w - 36}" height="{h - 24}" rx="3" />')
+        lines.append(f'<path class="symbol" d="M {x + 34} {cy} C {x + 46} {cy - 18}, {x + 58} {cy + 18}, {x + 70} {cy} S {x + 94} {cy}, {x + 106} {cy}" />')
+        _label(lines, ref, x + w // 2, y + 28, "label", "middle")
+        _label(lines, value, x + w // 2, y + h + 16, "small", "middle")
     elif kind == "switch":
         cy = y + h // 2
         _wire(lines, [(x, cy), (x + 34, cy)])
@@ -583,8 +782,9 @@ def _generic_column(component: Dict[str, Any]) -> int:
     role = str(component.get("role") or "").lower()
     ctype = str(component.get("type") or "").lower()
     text = f"{role} {ctype}"
+    kind = _generic_symbol_kind(component)
 
-    if any(token in text for token in ("supply", "power", "voltage")):
+    if kind == "source":
         return 0
     if any(token in text for token in ("input", "sensor", "bias", "filter", "threshold")):
         return 1
@@ -592,7 +792,7 @@ def _generic_column(component: Dict[str, Any]) -> int:
         return 2
     if any(token in text for token in ("driver", "switch", "mosfet", "transistor", "flyback", "clamp", "gate")):
         return 3
-    if any(token in text for token in ("load", "output", "pump", "motor", "fan", "indicator", "actuator", "led")):
+    if any(token in text for token in ("load", "output", "pump", "motor", "fan", "indicator", "actuator", "led", "solenoid", "valve")):
         return 4
     return 2
 
@@ -600,6 +800,8 @@ def _generic_column(component: Dict[str, Any]) -> int:
 def _generic_value_text(component: Dict[str, Any]) -> str:
     value = component.get("value", "")
     unit = str(component.get("unit") or "")
+    if value is None:
+        return ""
     if isinstance(value, (int, float)):
         if unit in {"ohm", "F", "V"}:
             return _fmt_value(float(value), unit)
@@ -611,6 +813,14 @@ def _generic_value_text(component: Dict[str, Any]) -> str:
     return str(value)
 
 
+def _generic_fallback_value(component: Dict[str, Any]) -> str:
+    ctype = str(component.get("type") or "")
+    role = str(component.get("role") or "")
+    if ctype.lower() in {"connector", "module", "terminal"} and role:
+        return role
+    return ctype
+
+
 def _is_power_net(net: str) -> bool:
     upper = str(net).upper()
     return upper in {"VCC", "VDD", "VIN", "+V", "VBAT", "SUPPLY"}
@@ -619,6 +829,13 @@ def _is_power_net(net: str) -> bool:
 def _is_ground_net(net: str) -> bool:
     upper = str(net).upper()
     return upper in {"0", "GND", "GROUND", "VSS"}
+
+
+def _power_marker(lines: list[str], net: str, x: int, y: int) -> None:
+    stem_top = max(112, y - 24)
+    _wire(lines, [(x, y), (x, stem_top)])
+    lines.append(f'<path class="symbol" d="M {x - 12} {stem_top} L {x} {stem_top - 16} L {x + 12} {stem_top}" />')
+    _label(lines, net, x, stem_top - 24, "net", "middle")
 
 
 def _short_text(text: str, limit: int) -> str:
