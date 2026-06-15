@@ -163,6 +163,49 @@ async def get_circuit_status(
     return status
 
 
+@router.get("/{design_id}/raw-deepseek", summary="Get the raw DeepSeek response for a design")
+async def get_raw_deepseek_response(
+    design_id: int,
+    service: CircuitService = Depends(get_circuit_service)
+):
+    """Return the raw upstream DeepSeek response and the system prompt used.
+
+    This is a transparency/debug endpoint. It lets the UI show the user exactly
+    what the model produced (after JSON parsing) plus the prompt that was sent.
+    Returns 404 when DeepSeek was not used (rule-based fallback) so the UI can
+    disable the "Show raw" button gracefully.
+    """
+    design = await service.get_design(design_id)
+    if not design:
+        raise HTTPException(status_code=404, detail="Circuit design not found")
+
+    circuit_ir = design.circuit_ir or design.parsed_requirements or {}
+    source = circuit_ir.get("source") or {}
+
+    raw_response = source.get("raw_response")
+    if not raw_response:
+        raise HTTPException(
+            status_code=404,
+            detail="Raw DeepSeek response is not available for this design "
+                   "(either DeepSeek was not used or the response was not retained).",
+        )
+
+    return {
+        "design_id": design_id,
+        "prompt_version": source.get("prompt_version"),
+        "model": source.get("model"),
+        "raw_message_text": source.get("raw_message_text"),
+        "raw_response": raw_response,
+        "raw_request": source.get("raw_request"),
+        "validated_ir_summary": {
+            "circuit_type": circuit_ir.get("circuit_type"),
+            "supported": circuit_ir.get("supported"),
+            "subsystem_count": len(circuit_ir.get("subsystems") or []),
+            "component_count": len(circuit_ir.get("components") or []),
+        },
+    }
+
+
 @router.get("/{design_id}/artifacts/{artifact_id}", summary="Download generated artifact")
 async def download_artifact(
     design_id: int,

@@ -7,6 +7,7 @@ CircuitIR instead.
 """
 from __future__ import annotations
 
+import json
 from html import escape
 from typing import Any, Dict, Optional
 
@@ -47,18 +48,372 @@ def _fmt_value(value: float, unit: str) -> str:
     return f"{value:g}"
 
 
-def generate_ir_schematic_svg(ir: Dict[str, Any]) -> str:
-    """Generate a schematic SVG from CircuitIR when a dedicated renderer exists."""
+def generate_ir_schematic_svg(ir: Dict[str, Any]) -> Any:
+    """Generate a schematic SVG from CircuitIR.
+
+    Backward compatible:
+    - If the IR has a `subsystems` field (v2 free-form), returns a dict
+      ``{"pages": [...], "summary": ..., "layout": "subsystem-paged"}``
+      with one SVG page per subsystem plus a final cross-page summary page.
+    - Otherwise returns a plain SVG string for legacy callers.
+    """
     circuit_type = ir.get("circuit_type")
+    if ir.get("subsystems"):
+        return _render_subsystem_paged(ir)
     if circuit_type == "555_timer_blinker":
         return _render_555_timer(ir)
     if circuit_type == "capacitor_discharge_led":
         return _render_capacitor_discharge_led(ir)
+    if circuit_type == "led_current_limiter":
+        return _render_led_limiter(ir)
     if circuit_type == "generic_circuit":
         if _is_sensor_driver_controller(ir):
             return _render_sensor_driver_controller(ir)
         return _render_generic_circuit(ir)
     return ""
+
+
+def _render_led_limiter(ir: Dict[str, Any]) -> str:
+    """Minimal IR-based renderer for the LED current-limiter template."""
+    components = [component for component in ir.get("components", []) if isinstance(component, dict)]
+    title = str(ir.get("title") or "LED current limiter")
+    lines = _svg_start(720, 360, title)
+
+    supply_comp = next((c for c in components if str(c.get("role", "")).lower() == "supply"), None)
+    resistor = next((c for c in components if str(c.get("role", "")).lower() == "current_limit"), None)
+    led = next((c for c in components if str(c.get("role", "")).lower() == "indicator"), None)
+
+    supply_v = supply_comp.get("value", 5) if supply_comp else 5
+    r_val = resistor.get("value", 150) if resistor else 150
+
+    if supply_comp:
+        _supply(lines, _ref(supply_comp, "V1"), f"{supply_v:g} V", 110, 110)
+    if resistor:
+        _resistor(lines, _ref(resistor, "R1"), _component_value(resistor, "150 Ohm"), 230, 150, True)
+    if led:
+        _led(lines, _ref(led, "D1"), 360, 150)
+
+    if supply_comp and resistor:
+        _wire(lines, [(110, 110), (110, 90), (230, 90), (230, 150)])
+    if resistor and led:
+        _wire(lines, [(316, 150), (360, 150)])
+    if led:
+        _wire(lines, [(394, 150), (430, 150), (430, 200)])
+        _ground(lines, 430, 200)
+    if supply_comp:
+        _wire(lines, [(110, 200)])
+        _ground(lines, 110, 200)
+
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem-paged renderer (v2 free-form)
+# ---------------------------------------------------------------------------
+
+_SUBSYSTEM_PAGE_GAP = 96
+_SUBSYSTEM_PAGE_TITLE_Y = 28
+_SUBSYSTEM_PAGE_FOOTER_Y = 540
+_SUBSYSTEM_COL_STEP = 220
+_SUBSYSTEM_ROW_STEP = 132
+_SUBSYSTEM_LEFT = 70
+_SUBSYSTEM_TOP = 105
+
+# Subsystem color palette (one per category from the v2 prompt's layered
+# decomposition). Used to tint the page banner and group components visually.
+_SUBSYSTEM_COLORS = {
+    "power_input": "#bbf7d0",
+    "protection": "#fed7aa",
+    "isolation": "#fde68a",
+    "signal_input": "#bfdbfe",
+    "signal_chain": "#c7d2fe",
+    "control": "#e9d5ff",
+    "load_output": "#fecaca",
+    "feedback": "#a7f3d0",
+    "hmi": "#fbcfe8",
+    "communication": "#cffafe",
+    "other": "#e5e7eb",
+}
+
+
+def _subsystem_color(name: str) -> str:
+    key = (name or "").lower().strip()
+    for token, color in _SUBSYSTEM_COLORS.items():
+        if token in key:
+            return color
+    return _SUBSYSTEM_COLORS["other"]
+
+
+def _assign_components_to_subsystems(ir: Dict[str, Any]) -> Dict[str, list[Dict[str, Any]]]:
+    """Group components by their `subsystem` field, falling back to role/column."""
+    components = [c for c in ir.get("components", []) if isinstance(c, dict)]
+    subsystems = ir.get("subsystems") or []
+    grouped: Dict[str, list[Dict[str, Any]]] = {}
+
+    # Pre-seed known subsystem names so the order is stable.
+    for sub in subsystems:
+        if isinstance(sub, dict) and sub.get("name"):
+            grouped.setdefault(str(sub["name"]), [])
+
+    # First pass: explicit subsystem field.
+    explicit = {str(c.get("ref")): str(c.get("subsystem")) for c in components if c.get("subsystem")}
+
+    # Second pass: cross-check against subsystems[].component_refs.
+    for sub in subsystems:
+        if not isinstance(sub, dict):
+            continue
+        name = str(sub.get("name") or "other")
+        refs = set(sub.get("component_refs") or [])
+        for comp in components:
+            ref = str(comp.get("ref") or "")
+            if not ref:
+                continue
+            if ref in explicit and explicit[ref] == name:
+                grouped.setdefault(name, []).append(comp)
+            elif ref in refs and (ref not in explicit):
+                grouped.setdefault(name, []).append(comp)
+
+    # Third pass: anything not assigned yet goes into a fallback bucket.
+    assigned_refs = {c.get("ref") for group in grouped.values() for c in group}
+    for comp in components:
+        if comp.get("ref") in assigned_refs:
+            continue
+        if comp.get("subsystem"):
+            target = str(comp["subsystem"])
+        else:
+            target = _infer_subsystem_from_role(comp)
+        grouped.setdefault(target, []).append(comp)
+
+    return {name: grouped[name] for name in grouped if grouped[name]}
+
+
+def _infer_subsystem_from_role(component: Dict[str, Any]) -> str:
+    role = str(component.get("role") or "").lower()
+    ctype = str(component.get("type") or "").lower()
+    text = f"{role} {ctype}"
+    if any(t in text for t in ("supply", "power", "regulator", "reference")):
+        return "power_input"
+    if any(t in text for t in ("protection", "fuse", "tvs", "gdt", "clamp")):
+        return "protection"
+    if any(t in text for t in ("isolation", "isolated", "optocoupler")):
+        return "isolation"
+    if any(t in text for t in ("sensor", "antenna", "input_signal", "signal_input", "connector", "bias")):
+        return "signal_input"
+    if any(t in text for t in ("amplifier", "filter", "adc", "dac", "driver", "signal_chain")):
+        return "signal_chain"
+    if any(t in text for t in ("controller", "microcontroller", "comparator", "logic", "mcu", "dsp")):
+        return "control"
+    if any(t in text for t in ("load", "motor", "pump", "fan", "solenoid", "valve", "relay_contact", "low_side_switch", "high_side_switch", "h_bridge")):
+        return "load_output"
+    if any(t in text for t in ("feedback", "current_shunt", "rtd", "thermistor")):
+        return "feedback"
+    if any(t in text for t in ("indicator", "led", "button", "switch", "display", "encoder", "buzzer", "hmi")):
+        return "hmi"
+    if any(t in text for t in ("communication", "uart", "spi", "i2c", "can", "rs485", "ethernet", "usb", "wireless", "antenna", "bluetooth", "wifi")):
+        return "communication"
+    return "other"
+
+
+def _subsystem_metadata(ir: Dict[str, Any], name: str) -> Dict[str, Any]:
+    for sub in ir.get("subsystems") or []:
+        if isinstance(sub, dict) and str(sub.get("name") or "").strip().lower() == name.strip().lower():
+            return {
+                "name": name,
+                "purpose": str(sub.get("purpose") or ""),
+                "component_refs": list(sub.get("component_refs") or []),
+            }
+    return {"name": name, "purpose": "", "component_refs": []}
+
+
+def _render_subsystem_page(
+    ir: Dict[str, Any],
+    subsystem_name: str,
+    components: list[Dict[str, Any]],
+    page_index: int,
+    total_pages: int,
+    width: int = 1180,
+    height: int = 620,
+) -> Dict[str, Any]:
+    """Render one subsystem into its own SVG page."""
+    title = f"{ir.get('title') or 'Circuit'} — {subsystem_name}"
+    lines = _svg_start(width, height, title)
+    meta = _subsystem_metadata(ir, subsystem_name)
+
+    # Banner
+    color = _subsystem_color(subsystem_name)
+    lines.append(
+        f'<rect x="0" y="0" width="{width}" height="44" fill="{color}" opacity="0.85" />'
+    )
+    _label(lines, f"Page {page_index + 1} / {total_pages}  ·  {subsystem_name}", 24, 28, "label")
+    if meta.get("purpose"):
+        _label(lines, meta["purpose"], width - 24, 28, "small", "end")
+    _label(lines, "Subsystem view (v2 free-form)", 24, 58, "small")
+
+    if not components:
+        _label(lines, "No components were assigned to this subsystem.", 24, 120, "small")
+        lines.append("</svg>")
+        return {"subsystem": subsystem_name, "svg": "\n".join(lines), "components": []}
+
+    # Reuse the generic column layout but bounded to this subsystem's refs.
+    placement = _subsystem_positions(components)
+    pin_map: Dict[str, list[tuple[int, int]]] = {}
+    component_pins: Dict[str, list[Dict[str, Any]]] = {}
+    for comp in components:
+        ref = str(comp.get("ref") or "?")
+        x, y, w, h = placement[ref]
+        pins = _generic_symbol_pins(comp, x, y, w, h)
+        component_pins[ref] = pins
+        for pin in pins:
+            pin_map.setdefault(str(pin["net"]), []).append((pin["x"], pin["y"]))
+
+    _render_generic_wires(lines, pin_map, width, height)
+
+    for comp in components:
+        ref = str(comp.get("ref") or "?")
+        x, y, w, h = placement[ref]
+        _draw_generic_symbol(lines, comp, x, y, w, h, component_pins[ref])
+
+    # Footer
+    _label(lines, f"{len(components)} component(s) on this page", 24, height - 18, "small")
+    lines.append("</svg>")
+    return {
+        "subsystem": subsystem_name,
+        "purpose": meta.get("purpose", ""),
+        "svg": "\n".join(lines),
+        "components": [str(c.get("ref") or "") for c in components],
+    }
+
+
+def _subsystem_positions(components: list[Dict[str, Any]]) -> Dict[str, tuple[int, int, int, int]]:
+    columns: list[list[Dict[str, Any]]] = [[] for _ in range(5)]
+    for component in components:
+        columns[_generic_column(component)].append(component)
+
+    positions: Dict[str, tuple[int, int, int, int]] = {}
+    for col_index, column in enumerate(columns):
+        x = _SUBSYSTEM_LEFT + col_index * _SUBSYSTEM_COL_STEP
+        for row_index, component in enumerate(column):
+            ref = str(component.get("ref") or f"X{col_index}{row_index}")
+            w, h = _generic_symbol_size(component)
+            positions[ref] = (x, _SUBSYSTEM_TOP + row_index * _SUBSYSTEM_ROW_STEP, w, h)
+    return positions
+
+
+def _render_cross_subsystem_summary(
+    ir: Dict[str, Any],
+    page_assignments: Dict[str, list[str]],
+    total_pages: int,
+    width: int = 1180,
+    height: int = 620,
+) -> str:
+    """Final summary page listing every subsystem and the components it owns."""
+    lines = _svg_start(width, height, f"{ir.get('title') or 'Circuit'} — overview")
+    lines.append(
+        f'<rect x="0" y="0" width="{width}" height="44" fill="#bfdbfe" opacity="0.85" />'
+    )
+    _label(lines, f"Page {total_pages} / {total_pages}  ·  Overview", 24, 28, "label")
+    _label(lines, "All subsystems in this CircuitIR", width - 24, 28, "small", "end")
+
+    cursor_y = 80
+    for name, refs in page_assignments.items():
+        meta = _subsystem_metadata(ir, name)
+        color = _subsystem_color(name)
+        lines.append(
+            f'<rect x="24" y="{cursor_y - 6}" width="16" height="16" fill="{color}" stroke="#111" />'
+        )
+        _label(lines, name, 50, cursor_y + 6, "label")
+        if meta.get("purpose"):
+            _label(lines, meta["purpose"], 200, cursor_y + 6, "small")
+        ref_text = ", ".join(refs) if refs else "(empty)"
+        _label(lines, ref_text, 24, cursor_y + 28, "small")
+        cursor_y += 56
+
+    # Optional rich metadata at the bottom.
+    metadata_fields = [
+        ("domain", "Domain"),
+        ("compliance_standards", "Compliance standards"),
+        ("operating_envelope", "Operating envelope"),
+    ]
+    if any(ir.get(field) for field, _ in metadata_fields):
+        cursor_y += 24
+        _label(lines, "Metadata", 24, cursor_y, "label")
+        cursor_y += 24
+        for field, label in metadata_fields:
+            value = ir.get(field)
+            if not value:
+                continue
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            _label(lines, f"{label}: {_short_text(str(text), 96)}", 24, cursor_y, "small")
+            cursor_y += 18
+
+    # Open questions, if any, always belong on the summary page.
+    open_questions = ir.get("open_questions") or []
+    if open_questions:
+        cursor_y += 18
+        _label(lines, "Open questions (please confirm before PCB layout)", 24, cursor_y, "label")
+        cursor_y += 20
+        for question in open_questions[:8]:
+            _label(lines, f"• {_short_text(str(question), 110)}", 24, cursor_y, "small")
+            cursor_y += 18
+
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def _render_subsystem_paged(ir: Dict[str, Any]) -> Dict[str, Any]:
+    grouped = _assign_components_to_subsystems(ir)
+    page_assignments: Dict[str, list[str]] = {
+        name: [str(c.get("ref") or "") for c in comps]
+        for name, comps in grouped.items()
+    }
+
+    # Stable ordering: keep the order declared in subsystems[] first, then any
+    # inferred bucket in insertion order.
+    declared = [
+        str(sub.get("name"))
+        for sub in (ir.get("subsystems") or [])
+        if isinstance(sub, dict) and sub.get("name")
+    ]
+    ordered_names: list[str] = []
+    for name in declared:
+        if name in grouped and name not in ordered_names:
+            ordered_names.append(name)
+    for name in grouped:
+        if name not in ordered_names:
+            ordered_names.append(name)
+
+    total_pages = len(ordered_names) + 1  # +1 for the summary page
+    pages: list[Dict[str, Any]] = []
+    for index, name in enumerate(ordered_names):
+        page = _render_subsystem_page(ir, name, grouped[name], index, total_pages)
+        pages.append(page)
+
+    summary_svg = _render_cross_subsystem_summary(ir, page_assignments, total_pages)
+    pages.append({
+        "subsystem": "_overview",
+        "purpose": "Cross-subsystem summary and metadata",
+        "svg": summary_svg,
+        "components": [],
+    })
+
+    return {
+        "layout": "subsystem-paged",
+        "circuit_type": ir.get("circuit_type"),
+        "subsystem_order": ordered_names,
+        "component_to_subsystem": {
+            ref: name
+            for name, refs in page_assignments.items()
+            for ref in refs
+        },
+        "pages": pages,
+        "summary": {
+            "page_count": len(pages),
+            "subsystem_count": len(ordered_names),
+            "total_components": sum(len(p.get("components") or []) for p in pages[:-1]),
+            "prompt_version": (ir.get("source") or {}).get("prompt_version"),
+        },
+    }
 
 
 def _svg_start(width: int, height: int, title: str) -> list[str]:

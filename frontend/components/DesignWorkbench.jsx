@@ -37,6 +37,7 @@ export default function DesignWorkbench() {
   const [description, setDescription] = useState(examplePrompts[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [submissionWarning, setSubmissionWarning] = useState(null);
 
   // 键盘快捷键支持 (Ctrl+Enter 提交)
   useEffect(() => {
@@ -66,6 +67,8 @@ export default function DesignWorkbench() {
 
     const trimmed = description.trim();
     setIsSubmitting(true);
+    // 软提示:如果看起来不像电路,把 warning 也展示给用户
+    setSubmissionWarning(validation.warning || null);
 
     try {
       // 创建设计
@@ -103,6 +106,7 @@ export default function DesignWorkbench() {
         customSolution: '请检查您的输入，确保描述清晰且包含必要的参数（如电压、频率等）'
       });
       setError(errorMessage);
+      setSubmissionWarning(null);
       setIsSubmitting(false);
     }
   };
@@ -172,6 +176,15 @@ export default function DesignWorkbench() {
                       ))}
                     </Select>
                   </Box>
+
+                  {submissionWarning && !error && (
+                    <Alert
+                      severity="warning"
+                      onClose={() => setSubmissionWarning(null)}
+                    >
+                      {submissionWarning}
+                    </Alert>
+                  )}
 
                   {error && (
                     <Alert severity="error" onClose={() => setError(null)}>

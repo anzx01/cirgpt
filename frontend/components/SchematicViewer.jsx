@@ -7,32 +7,54 @@ import {
   Typography,
   Alert,
   IconButton,
-  Tooltip
+  Tooltip,
+  Chip,
+  Stack
 } from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import DownloadIcon from '@mui/icons-material/Download';
 import { downloadSVG } from '../lib/downloadUtils';
 
-export default function SchematicViewer({ svg }) {
+function PageChip({ label, count, active, onClick }) {
+  return (
+    <Chip
+      label={`${label}${count != null ? ` (${count})` : ''}`}
+      onClick={onClick}
+      color={active ? 'primary' : 'default'}
+      variant={active ? 'filled' : 'outlined'}
+      sx={{ cursor: 'pointer' }}
+      size="small"
+    />
+  );
+}
+
+export default function SchematicViewer({ svg, pages }) {
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState(null);
+  const [pageIndex, setPageIndex] = useState(0);
 
-  const handleZoomIn = () => {
-    setZoom(prev => Math.min(prev + 0.2, 3));
-  };
+  const isPaged = Boolean(pages && pages.pages && pages.pages.length > 0);
+  const pageList = isPaged ? pages.pages : [];
+  const currentPage = pageList[pageIndex];
+  const currentSvg = isPaged ? (currentPage?.svg || '') : svg;
 
-  const handleZoomOut = () => {
-    setZoom(prev => Math.max(prev - 0.2, 0.4));
-  };
+  useEffect(() => {
+    setPageIndex(0);
+  }, [pages, svg]);
+
+  const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.2, 3));
+  const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.2, 0.4));
 
   const handleDownload = () => {
-    if (!svg) {
+    if (!currentSvg) {
       setError('No schematic SVG is available to download.');
       return;
     }
-
-    const result = downloadSVG(svg, 'schematic.svg');
+    const baseName = isPaged
+      ? `schematic_${(currentPage?.subsystem || 'page').replace(/[^a-z0-9_-]/gi, '_')}.svg`
+      : 'schematic.svg';
+    const result = downloadSVG(currentSvg, baseName);
     if (!result.success) {
       setError('Download failed. Please try again.');
     }
@@ -48,9 +70,9 @@ export default function SchematicViewer({ svg }) {
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [svg]);
+  }, [currentSvg]);
 
-  if (!svg) {
+  if (!currentSvg && !isPaged) {
     return (
       <Box sx={{ p: 4, textAlign: 'center' }}>
         <Alert severity="info">
@@ -60,22 +82,24 @@ export default function SchematicViewer({ svg }) {
     );
   }
 
-  if (error) {
-    return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity="error" onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      </Box>
-    );
-  }
-
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Typography variant="h6" fontWeight="bold">
-          Circuit Schematic
-        </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
+        <Box>
+          <Typography variant="h6" fontWeight="bold">
+            Circuit Schematic
+            {isPaged && pages.layout === 'subsystem-paged' && (
+              <Typography component="span" variant="caption" color="primary" sx={{ ml: 1 }}>
+                subsystem-paged ({pages.summary?.subsystem_count ?? pageList.length} layers)
+              </Typography>
+            )}
+          </Typography>
+          {isPaged && currentPage?.purpose && (
+            <Typography variant="body2" color="text.secondary">
+              {currentPage.purpose}
+            </Typography>
+          )}
+        </Box>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
           <Tooltip title="Zoom out">
             <span>
@@ -102,6 +126,22 @@ export default function SchematicViewer({ svg }) {
         </Box>
       </Box>
 
+      {isPaged && (
+        <Box sx={{ mb: 2 }}>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {pageList.map((page, index) => (
+              <PageChip
+                key={`${page.subsystem || 'page'}_${index}`}
+                label={page.subsystem === '_overview' ? 'Overview' : (page.subsystem || `Page ${index + 1}`)}
+                count={page.components ? page.components.length : null}
+                active={index === pageIndex}
+                onClick={() => setPageIndex(index)}
+              />
+            ))}
+          </Stack>
+        </Box>
+      )}
+
       <Paper
         elevation={1}
         sx={{
@@ -114,7 +154,7 @@ export default function SchematicViewer({ svg }) {
         }}
       >
         <Box
-          dangerouslySetInnerHTML={{ __html: svg }}
+          dangerouslySetInnerHTML={{ __html: currentSvg }}
           sx={{
             width: '100%',
             minHeight: { xs: 350, md: 500 },
@@ -133,7 +173,9 @@ export default function SchematicViewer({ svg }) {
 
       <Box sx={{ mt: 2 }}>
         <Typography variant="body2" color="text.secondary">
-          Use the zoom controls to inspect the schematic, or download the KiCad-exported SVG.
+          {isPaged
+            ? 'Each subsystem is rendered on its own page. Use the chips above to switch layers; the overview page lists every layer with its components and any open questions.'
+            : 'Use the zoom controls to inspect the schematic, or download the KiCad-exported SVG.'}
         </Typography>
       </Box>
     </Box>

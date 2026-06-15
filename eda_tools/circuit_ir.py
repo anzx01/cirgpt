@@ -69,7 +69,10 @@ def generate_spice_netlist(ir: Dict[str, Any]) -> str:
     if circuit_type == "generic_circuit":
         return _generic_netlist(ir)
 
-    raise ValueError(f"Unsupported CircuitIR type: {circuit_type}")
+    # Unknown circuit_type: fall back to the generic connectivity netlist so the
+    # pipeline still produces useful artifacts. The original circuit_type is
+    # preserved on the IR for downstream reporting.
+    return _generic_netlist(ir)
 
 
 def _header(ir: Dict[str, Any]) -> list[str]:

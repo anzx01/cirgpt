@@ -11,7 +11,6 @@ from nlp.circuit_generator import generate_circuit_design
 from nlp.deepseek_parser import deepseek_configured, parse_description_with_deepseek
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
@@ -54,9 +53,10 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
         logger.info(f"Parsing: {request.description[:100]}...")
 
         parser_warnings = []
+        raw_response = None
         if deepseek_configured():
             try:
-                requirements = await parse_description_with_deepseek(request.description)
+                requirements, raw_response = await parse_description_with_deepseek(request.description, return_raw=True)
                 if not requirements.get("supported", False) and request.description.strip():
                     requirements = parse_description_to_ir(request.description)
                     parser_warnings.append("DeepSeek returned an unsupported result; generic rule-based draft was used.")
@@ -69,6 +69,12 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
 
         if parser_warnings:
             requirements.setdefault("warnings", []).extend(parser_warnings)
+
+        # Surface the raw DeepSeek payload as a top-level key so the frontend
+        # "Show raw DeepSeek response" button can render it without needing to
+        # dig into source.raw_response. None when DeepSeek was not used.
+        if raw_response is not None:
+            requirements["raw_deepseek_response"] = raw_response
 
         logger.info(f"Successfully parsed requirements")
         return ParseResponse(

@@ -25,12 +25,14 @@ import {
   Checklist as BomIcon,
   Home as HomeIcon,
   FactCheck as ValidationIcon,
-  Download as DownloadIcon
+  Download as DownloadIcon,
+  Visibility as VisibilityIcon
 } from '@mui/icons-material';
 import SchematicViewer from '../../../components/SchematicViewer';
 import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
 import BomViewer from '../../../components/BomViewer';
+import RawDeepseekDialog from '../../../components/RawDeepseekDialog';
 import { API_BASE_URL, WEBSOCKET_URL } from '../../../config.mjs';
 import { PollingManager } from '../../../lib/pollingUtils';
 import { formatUserError } from '../../../lib/errorUtils';
@@ -59,6 +61,10 @@ export default function DesignResultPage() {
   });
   const [connectionMode, setConnectionMode] = useState('connecting'); // 'websocket' | 'polling' | 'connecting'
   const [pollingManager, setPollingManager] = useState(null);
+  const [rawOpen, setRawOpen] = useState(false);
+  const [rawData, setRawData] = useState(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState(null);
 
   // 获取设计数据
   const fetchDesign = async () => {
@@ -234,6 +240,36 @@ export default function DesignResultPage() {
     window.open(`${API_BASE_URL}/circuit/${designId}/artifacts/${artifactId}`, '_blank', 'noopener,noreferrer');
   };
 
+  const handleOpenRaw = async () => {
+    setRawOpen(true);
+    if (rawData || rawLoading) {
+      return;
+    }
+    setRawLoading(true);
+    setRawError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/circuit/${designId}/raw-deepseek`);
+      if (response.status === 404) {
+        setRawError('No raw DeepSeek response is available for this design (rule-based parser was used, or the key was not configured).');
+        setRawData(null);
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`Failed to load raw response (${response.status})`);
+      }
+      const data = await response.json();
+      setRawData(data);
+    } catch (err) {
+      setRawError(formatUserError('Load raw DeepSeek response', err));
+    } finally {
+      setRawLoading(false);
+    }
+  };
+
+  const handleCloseRaw = () => {
+    setRawOpen(false);
+  };
+
   if (loading) {
     return (
       <Container maxWidth="lg" sx={{ py: 8 }}>
@@ -296,15 +332,58 @@ export default function DesignResultPage() {
             <Typography variant="body1" color="text.secondary" paragraph sx={{ wordBreak: 'break-word' }}>
               {design?.description}
             </Typography>
+            {design?.circuit_ir?.source?.prompt_version && (
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color="primary"
+                  label={`prompt: ${design.circuit_ir.source.prompt_version}`}
+                />
+                {design.circuit_ir.source.model && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={`model: ${design.circuit_ir.source.model}`}
+                  />
+                )}
+                {Array.isArray(design.circuit_ir.subsystems) && design.circuit_ir.subsystems.length > 0 && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color="secondary"
+                    label={`subsystems: ${design.circuit_ir.subsystems.length}`}
+                  />
+                )}
+                {Array.isArray(design.circuit_ir.open_questions) && design.circuit_ir.open_questions.length > 0 && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color="warning"
+                    label={`open questions: ${design.circuit_ir.open_questions.length}`}
+                  />
+                )}
+              </Stack>
+            )}
           </Box>
-          <Button
-            variant="outlined"
-            startIcon={<HomeIcon />}
-            onClick={() => router.push('/')}
-            sx={{ flexShrink: 0 }}
-          >
-            返回首页
-          </Button>
+          <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<VisibilityIcon />}
+              onClick={handleOpenRaw}
+              disabled={rawLoading}
+            >
+              {rawLoading ? 'Loading…' : 'Show raw DeepSeek response'}
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<HomeIcon />}
+              onClick={() => router.push('/')}
+            >
+              返回首页
+            </Button>
+          </Stack>
         </Box>
 
         {isProcessing && (
@@ -374,7 +453,7 @@ export default function DesignResultPage() {
         </Tabs>
 
         <TabPanel value={tabValue} index={0}>
-          <SchematicViewer svg={design?.schematic_svg} />
+          <SchematicViewer svg={design?.schematic_svg} pages={design?.schematic_pages} />
         </TabPanel>
 
         <TabPanel value={tabValue} index={1}>
@@ -467,6 +546,20 @@ export default function DesignResultPage() {
           />
         )}
       </Box>
+
+      <RawDeepseekDialog
+        open={rawOpen}
+        onClose={handleCloseRaw}
+        raw={rawData}
+      />
+
+      {rawError && !rawOpen && (
+        <Box sx={{ position: 'fixed', bottom: 24, right: 24, maxWidth: 360, zIndex: 1500 }}>
+          <Alert severity="info" onClose={() => setRawError(null)}>
+            {rawError}
+          </Alert>
+        </Box>
+      )}
     </Container>
   );
 }

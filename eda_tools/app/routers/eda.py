@@ -94,9 +94,32 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
         logger.info("Generating schematic with industrial-grade pipeline")
 
         if request.circuit_ir:
-            if request.circuit_ir.get("circuit_type") == "generic_circuit":
-                svg = generate_ir_schematic_svg(request.circuit_ir)
-                if svg:
+            if request.circuit_ir.get("circuit_type") == "generic_circuit" or request.circuit_ir.get("subsystems"):
+                svg_or_paged = generate_ir_schematic_svg(request.circuit_ir)
+                if svg_or_paged:
+                    if isinstance(svg_or_paged, dict):
+                        summary = {
+                            "title": request.circuit_ir.get("title", "Circuit"),
+                            "components": len(request.circuit_ir.get("components", [])),
+                            "nets": len(request.circuit_ir.get("nets", [])),
+                            "algorithm": "CircuitIR subsystem-paged renderer (v2 free-form)",
+                            "generator": "subsystem-paged-ir-svg",
+                            "layout": svg_or_paged.get("layout"),
+                            "page_count": (svg_or_paged.get("summary") or {}).get("page_count"),
+                            "subsystem_count": (svg_or_paged.get("summary") or {}).get("subsystem_count"),
+                        }
+                        return {
+                            "success": True,
+                            "message": "Subsystem-paged schematic generated",
+                            "svg": (svg_or_paged.get("pages") or [{}])[0].get("svg", ""),
+                            "schematic_svg": (svg_or_paged.get("pages") or [{}])[0].get("svg", ""),
+                            "schematic_pages": svg_or_paged,
+                            "summary": summary,
+                            "generator": "subsystem-paged-ir-svg",
+                            "warnings": [
+                                "Subsystem-paged draft; engineering review required before PCB layout."
+                            ],
+                        }
                     summary = {
                         "title": request.circuit_ir.get("title", "Circuit"),
                         "components": len(request.circuit_ir.get("components", [])),
@@ -107,7 +130,7 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                     return {
                         "success": True,
                         "message": "Generic CircuitIR schematic generated",
-                        "svg": svg,
+                        "svg": svg_or_paged,
                         "summary": summary,
                         "generator": "generic-ir-svg",
                         "warnings": [

@@ -218,6 +218,7 @@ class CircuitService:
             design.parsed_requirements = circuit_ir
             design.netlist = netlist
             design.schematic_svg = schematic_result.get("svg")
+            design.schematic_pages = schematic_result.get("schematic_pages")
             design.simulation_results = simulation_result.get("results")
             design.simulation_status = simulation_result.get("results", {}).get("status")
             design.pcb_layout = pcb_result.get("layout")
@@ -282,7 +283,18 @@ class CircuitService:
             raise Exception(f"AI service error: {response.status_code}")
 
         data = response.json()
-        return data["requirements"]
+        requirements = data["requirements"]
+
+        # The AI service surfaces the raw DeepSeek payload at
+        # requirements["raw_deepseek_response"]. Move it into source so the
+        # /raw-deepseek endpoint finds it there (source is what we look up).
+        raw_deepseek = requirements.pop("raw_deepseek_response", None)
+        if raw_deepseek is not None:
+            source = requirements.get("source") or {}
+            source["raw_response"] = raw_deepseek
+            requirements["source"] = source
+
+        return requirements
 
     async def _generate_netlist_from_ir(self, circuit_ir: Dict[str, Any]) -> str:
         """

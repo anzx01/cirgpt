@@ -21,6 +21,7 @@ class CircuitDesign(Base):
     netlist = Column(Text, nullable=True)  # Generated netlist
     schematic_svg = Column(Text, nullable=True)  # Schematic in SVG format
     schematic_png = Column(Text, nullable=True)  # Base64 PNG image
+    schematic_pages = Column(JSON, nullable=True)  # Subsystem-paged schematic pages (v2)
 
     # Simulation results
     simulation_results = Column(JSON, nullable=True)  # Waveform data
@@ -62,6 +63,7 @@ class CircuitDesign(Base):
             "netlist": self.netlist,
             "schematic_svg": self.schematic_svg,
             "schematic_png": self.schematic_png,
+            "schematic_pages": self.schematic_pages,
             "simulation_results": self.simulation_results,
             "simulation_status": self.simulation_status,
             "pcb_layout": self.pcb_layout,

@@ -20,6 +20,7 @@ class CircuitDesignUpdate(BaseModel):
     netlist: Optional[str] = None
     schematic_svg: Optional[str] = None
     schematic_png: Optional[str] = None
+    schematic_pages: Optional[Dict[str, Any]] = None
     simulation_results: Optional[Dict[str, Any]] = None
     simulation_status: Optional[str] = None
     pcb_layout: Optional[Dict[str, Any]] = None
@@ -45,6 +46,7 @@ class CircuitDesignResponse(BaseModel):
     netlist: Optional[str] = None
     schematic_svg: Optional[str] = None
     schematic_png: Optional[str] = None
+    schematic_pages: Optional[Dict[str, Any]] = None
     simulation_results: Optional[Dict[str, Any]] = None
     simulation_status: Optional[str] = None
     pcb_layout: Optional[Dict[str, Any]] = None

@@ -1,59 +1,97 @@
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+"""Backend SQLAlchemy models.
+
+The concrete ``CircuitDesign`` and ``DesignHistory`` model classes live in
+``circuit_design.py`` and ``design_history.py`` respectively. They import
+the shared ``Base`` from this module, so this ``__init__`` only needs to
+expose the declarative base plus a small ``init_db`` helper that brings
+the SQLite schema in line with the current model definitions.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import settings
 
-# Create database engine
-engine = create_engine(
-    settings.DB_URL,
-    connect_args={"check_same_thread": False} if settings.DB_URL.startswith("sqlite") else {}
-)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Create SessionLocal class
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Create Base class for models
 Base = declarative_base()
 
-# Import all models
 from models.circuit_design import CircuitDesign
 from models.design_history import DesignHistory
 
-# Create all tables
-def init_db():
-    """Initialize database tables"""
-    Base.metadata.create_all(bind=engine)
-    _ensure_sqlite_columns()
+
+_engine = None
+_SessionLocal: Optional[sessionmaker] = None
 
 
-def _ensure_sqlite_columns():
-    """Add v1 columns to existing local SQLite databases.
+def get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(
+            settings.DB_URL,
+            connect_args={"check_same_thread": False} if settings.DB_URL.startswith("sqlite") else {},
+            pool_pre_ping=True,
+        )
+    return _engine
 
-    This project does not ship Alembic migrations yet, so local users may have
-    an older app.db created by the prototype. Keep this tiny compatibility shim
-    scoped to SQLite; production deployments should replace it with migrations.
+
+def get_session_factory() -> sessionmaker:
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(bind=get_engine(), autoflush=False, autocommit=False)
+    return _SessionLocal
+
+
+def SessionLocal():
+    return get_session_factory()()
+
+
+def init_db() -> None:
+    """Create all tables and apply forward-only column additions.
+
+    Safe to call repeatedly. For SQLite, ``ALTER TABLE ADD COLUMN`` has no
+    ``IF NOT EXISTS`` form, so we issue each addition and swallow the
+    "duplicate column" error if the column is already there.
     """
-    if not settings.DB_URL.startswith("sqlite"):
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+
+    if engine.dialect.name != "sqlite":
         return
 
-    inspector = inspect(engine)
-    if "circuit_designs" not in inspector.get_table_names():
-        return
-
-    existing = {column["name"] for column in inspector.get_columns("circuit_designs")}
-    columns = {
-        "progress": "INTEGER DEFAULT 0",
-        "current_step": "VARCHAR(255)",
-        "job_id": "VARCHAR(100)",
-        "circuit_ir": "JSON",
-        "validation": "JSON",
-        "artifacts": "JSON",
+    forward_columns = {
+        "circuit_designs": [
+            ("schematic_pages", "TEXT"),
+            ("schematic_png", "TEXT"),
+            ("simulation_status", "VARCHAR(50)"),
+        ],
     }
+    raw_conn = engine.connect()
+    try:
+        for table, cols in forward_columns.items():
+            for col_name, col_type in cols:
+                stmt = f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                try:
+                    raw_conn.exec_driver_sql(stmt)
+                except Exception as exc:  # noqa: BLE001 - duplicate column is the expected no-op
+                    msg = str(exc).lower()
+                    if "duplicate column" in msg or "already exists" in msg:
+                        continue
+                    raise
+    finally:
+        raw_conn.close()
 
-    with engine.begin() as conn:
-        for name, definition in columns.items():
-            if name not in existing:
-                conn.execute(text(f"ALTER TABLE circuit_designs ADD COLUMN {name} {definition}"))
 
-__all__ = ["engine", "SessionLocal", "Base", "CircuitDesign", "DesignHistory", "init_db"]
+__all__ = [
+    "Base",
+    "CircuitDesign",
+    "DesignHistory",
+    "SessionLocal",
+    "get_engine",
+    "get_session_factory",
+    "init_db",
+]

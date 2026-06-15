@@ -42,7 +42,9 @@ def generate_kicad_artifacts(ir: Dict[str, Any]) -> Dict[str, Any]:
         "opamp_inverting",
         "opamp_non_inverting",
     }:
-        raise KiCadArtifactError(f"Unsupported CircuitIR type for KiCad export: {ir.get('circuit_type')}")
+        # Unknown circuit_type: skip SKiDL/KiCad schematic but return a sentinel so
+        # the EDA router can fall back gracefully to the generic IR SVG renderer.
+        return {"success": False, "skipped": True}
 
     python_exe = _find_python_with_skidl()
     kicad_root, kicad_cli = _find_kicad()
