@@ -1,0 +1,1260 @@
+"""
+KiCad MCP schematic generation from CircuitIR.
+
+Runs the mcp-kicad-sch-api MCP server (a thin wrapper around the
+kicad-sch-api library) as a stdio subprocess and drives it as an MCP
+client: components are placed from a type -> library-symbol map, then
+every net connection gets a net label on the symbol pin (power rails
+get power-library symbols instead). Before the artifacts are returned,
+kicad-cli exports a netlist and the connectivity is compared with the
+IR's nets; a mismatch raises so the caller can fall back to the SKiDL
+pipeline.
+
+Requires the eda_tools venv: mcp (>=1,<2), kicad-sch-api, and the
+mcp-kicad-sch-api wheel (vendored under eda_tools/wheels/).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from math import cos, radians, sin
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+class McpSchematicError(RuntimeError):
+    """Raised when MCP-based KiCad generation cannot produce valid artifacts."""
+
+
+# ---------------------------------------------------------------------------
+# toolchain discovery (KiCad paths are shared with the SKiDL pipeline)
+
+def _find_kicad() -> Tuple[Path, Path]:
+    env_cli = os.environ.get("KICAD_CLI")
+    if env_cli and Path(env_cli).exists():
+        cli = Path(env_cli)
+        return cli.resolve().parents[1], cli
+    env_root = os.environ.get("KICAD_ROOT")
+    for root in [Path(env_root)] if env_root else []:
+        cli = root / "bin" / "kicad-cli.exe"
+        if cli.exists():
+            return root, cli
+    which = shutil.which("kicad-cli")
+    if which:
+        cli = Path(which)
+        return cli.resolve().parents[1], cli
+    raise McpSchematicError("KiCad CLI not found. Set KICAD_ROOT or KICAD_CLI.")
+
+
+def _server_env(kicad_root: Path, kicad_cli: Path) -> Dict[str, str]:
+    symbol_dir = kicad_root / "share" / "kicad" / "symbols"
+    env = dict(os.environ)
+    env.update(
+        {
+            "KICAD_ROOT": str(kicad_root),
+            "KICAD_CLI": str(kicad_cli),
+            "KICAD_SYMBOL_DIR": str(symbol_dir),
+            "KICAD8_SYMBOL_DIR": str(symbol_dir),
+            "KICAD9_SYMBOL_DIR": str(symbol_dir),
+            "PYTHONUTF8": "1",
+            "PATH": str(kicad_root / "bin") + os.pathsep + os.environ.get("PATH", ""),
+        }
+    )
+    return env
+
+
+def mcp_backend_available() -> bool:
+    """True when the MCP server module can be imported by this venv."""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("mcp_kicad_sch_api") is not None
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# CircuitIR -> KiCad library mapping (ported from the SKiDL generic builder)
+
+RES_FP = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
+CAP_FP = "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P2.50mm"
+CPOL_FP = "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm"
+LED_FP = "LED_THT:LED_D5.0mm"
+DIP8_FP = "Package_DIP:DIP-8_W7.62mm"
+SW_FP = "Button_Switch_THT:SW_PUSH_6mm"
+TP_FP = "TestPoint:TestPoint_THTPad_D1.5mm_Drill0.7mm"
+
+_GND_NAMES = {"0", "GND", "VSS", "DGND", "AGND", "GROUND"}
+
+_SOURCE_TYPES = {"dc_voltage_source", "dc_source", "voltage_source", "battery"}
+
+
+def _is_gnd(name: Any) -> bool:
+    return str(name).upper() in _GND_NAMES
+
+
+def _rail_symbol(name: Any) -> Optional[str]:
+    """Power-library symbol name for a rail net, or None."""
+    n = str(name).upper().replace("-", "_")
+    if n in {"VCC", "VDD", "3V3", "3.3V"}:
+        return "+3V3" if "3" in n else "VCC"
+    if n in {"5V", "+5V", "VCC_5V", "VDD_5V", "VCC5V"}:
+        return "+5V"
+    if n in {"9V", "+9V", "VCC_9V"}:
+        return "+9V"
+    if n in {"12V", "+12V", "VIN_12V", "VCC_12V"}:
+        return "+12V"
+    if n in {"15V", "+15V", "VIN_15V"}:
+        return "+15V"
+    return None
+
+
+def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    t = str(comp.get("type") or "").lower()
+    v = str(comp.get("value") or "")
+    vu = v.upper()
+    if "screw" in v.lower():
+        n = len(comp.get("nodes") or [])
+        if 2 <= n <= 8:
+            return ("Connector", f"Screw_Terminal_01x{n:02d}")
+    if t == "resistor":
+        return ("Device", "R")
+    if t in {"capacitor", "cap"}:
+        return ("Device", "C")
+    if t == "inductor":
+        return ("Device", "L")
+    if t == "led":
+        return ("Device", "LED")
+    if t == "tvs_diode":
+        return ("Device", "D_TVS")
+    if t == "zener_diode":
+        return ("Device", "D_Zener")
+    if t == "diode":
+        if any(k in vu for k in ("SS", "1N58", "SK", "BAT", "MBR")):
+            return ("Device", "D_Schottky")
+        return ("Device", "D")
+    if t == "crystal":
+        return ("Device", "Crystal")
+    if t == "fuse":
+        return ("Device", "Fuse")
+    if t in {"switch", "button"}:
+        return ("Switch", "SW_SPST")
+    if t in {"mosfet", "transistor_mosfet", "fet", "power_mosfet"}:
+        if "PMOS" in (t + vu) or "-P" in vu:
+            return ("Device", "Q_PMOS")
+        return ("Device", "Q_NMOS")
+    if t in {"bjt", "transistor", "transistor_npn"}:
+        if "PNP" in vu:
+            return ("Device", "Q_PNP")
+        return ("Device", "Q_NPN")
+    if t == "linear_regulator":
+        return ("Regulator_Linear", "L7805")
+    if t == "timer_ic":
+        return ("Timer", "LM555xN")
+    if t == "opamp":
+        return ("Amplifier_Operational", "LM358")
+    if t == "microcontroller":
+        return ("MCU_Microchip_ATmega", "ATmega328P-P")
+    if t == "test_point":
+        return ("Connector", "TestPoint")
+    if t == "connector":
+        n = len(comp.get("nodes") or [])
+        if 2 <= n <= 8:
+            return ("Connector_Generic", f"Conn_01x{n:02d}")
+    n = len(comp.get("nodes") or [])
+    if 2 <= n <= 8:
+        return ("Connector_Generic", f"Conn_01x{n:02d}")
+    return None
+
+
+def _footprint_for(lib: str, sym: str, comp: Dict[str, Any]) -> str:
+    t = str(comp.get("type") or "").lower()
+    if (lib, sym) == ("Device", "R"):
+        return RES_FP
+    if (lib, sym) == ("Device", "C"):
+        try:
+            return CPOL_FP if float(comp.get("value") or 0) >= 1e-6 else CAP_FP
+        except (TypeError, ValueError):
+            return CAP_FP
+    if (lib, sym) == ("Device", "LED"):
+        return LED_FP
+    if t == "timer_ic":
+        return DIP8_FP
+    if t in {"switch", "button"}:
+        return SW_FP
+    if t == "test_point":
+        return TP_FP
+    return ""
+
+
+def _fmt_value(comp: Dict[str, Any]) -> str:
+    t = str(comp.get("type") or "").lower()
+    value = comp.get("value")
+    unit = str(comp.get("unit") or "").strip()
+    if value is None or value == "":
+        return str(comp.get("ref") or t or "PART")
+
+    def num(v: float) -> str:
+        return f"{v:g}"
+
+    try:
+        fv = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    if unit:
+        if abs(fv) >= 1e9:
+            return f"{num(fv / 1e9)}G{unit}"
+        if abs(fv) >= 1e6:
+            return f"{num(fv / 1e6)}M{unit}"
+        if abs(fv) >= 1e3:
+            return f"{num(fv / 1e3)}k{unit}"
+        if abs(fv) != 0 and abs(fv) < 1:
+            if abs(fv) >= 1e-3:
+                return f"{num(fv * 1e3)}m{unit}"
+            if abs(fv) >= 1e-6:
+                return f"{num(fv * 1e6)}u{unit}"
+            if abs(fv) >= 1e-9:
+                return f"{num(fv * 1e9)}n{unit}"
+            return f"{num(fv * 1e12)}p{unit}"
+        return f"{num(fv)}{unit}"
+    if t == "resistor":
+        if abs(fv) >= 1_000_000:
+            return f"{num(fv / 1_000_000)}M"
+        if abs(fv) >= 1_000:
+            return f"{num(fv / 1_000)}k"
+        return num(fv)
+    if t in {"capacitor", "cap"}:
+        if abs(fv) >= 1e-3:
+            return f"{num(fv)}F"
+        if abs(fv) >= 1e-6:
+            return f"{num(fv * 1e6)}uF"
+        if abs(fv) >= 1e-9:
+            return f"{num(fv * 1e9)}nF"
+        return f"{num(fv * 1e12)}pF"
+    if t == "inductor":
+        if abs(fv) >= 1:
+            return num(fv)
+        return f"{num(fv * 1e6)}u"
+    return num(fv)
+
+
+def _safe_label(name: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9_+\-./]", "_", str(name).strip())
+    return text or "NET"
+
+
+_TRANSISTOR_LIBS = {
+    "Device:Q_NMOS": {"gnd": "S", "rail": "D", "drive": "G", "load": "D"},
+    "Device:Q_PMOS": {"gnd": "D", "rail": "S", "drive": "G", "load": "S"},
+    "Device:Q_NPN": {"gnd": "E", "rail": "E", "drive": "B", "load": "C"},
+    "Device:Q_PNP": {"gnd": "C", "rail": "C", "drive": "B", "load": "E"},
+}
+
+
+def _pin_aliases(
+    placed: List[Tuple[Dict[str, Any], str, str]],
+    ir_nets: List[Dict[str, Any]],
+    pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+) -> Dict[str, Dict[str, str]]:
+    """Alias maps for letter-pinned symbols (e.g. KiCad 10 Q_NMOS uses D/G/S).
+
+    IR pins are positional (pin k == nodes[k-1]); for three-terminal
+    transistors the node's net identifies the role: the ground/rail node is
+    the source/emitter, the node sharing a net with a driver (R*/U*) is the
+    gate/base, the remaining one is the drain/collector.
+    """
+    net_members: Dict[str, List[str]] = {}
+    for net in ir_nets:
+        if isinstance(net, dict):
+            net_members[str(net.get("name") or "")] = [
+                str(c).rpartition(".")[0] for c in net.get("connections", []) or []
+            ]
+
+    aliases: Dict[str, Dict[str, str]] = {}
+    for comp, lib, sym in placed:
+        ref = str(comp.get("ref") or "")
+        roles = _TRANSISTOR_LIBS.get(f"{lib}:{sym}")
+        symbol_pins = {pin for (r, pin) in pin_positions if r == ref}
+        if not roles or not ref or any(p.isdigit() for p in symbol_pins):
+            continue
+
+        nodes = [str(n) for n in comp.get("nodes") or []][:3]
+        if len(nodes) < 3:
+            continue
+        pin_role: Dict[str, str] = {}
+        remaining = list(range(3))
+        for idx, net_name in enumerate(nodes):
+            if _is_gnd(net_name):
+                pin_role[str(idx + 1)] = roles["gnd"]
+                remaining.remove(idx)
+                break
+        if len(remaining) == 3:  # no ground node; try a power rail
+            for idx, net_name in enumerate(nodes):
+                if _rail_symbol(net_name):
+                    pin_role[str(idx + 1)] = roles["rail"]
+                    remaining.remove(idx)
+                    break
+        if len(remaining) >= 2:
+            drive_idx = None
+            for idx in remaining:
+                members = net_members.get(nodes[idx], [])
+                if any(m.startswith(("R", "U")) for m in members):
+                    drive_idx = idx
+                    break
+            if drive_idx is None:
+                drive_idx = remaining[0]
+            pin_role[str(drive_idx + 1)] = roles["drive"]
+            remaining.remove(drive_idx)
+        # Whatever is left, in node order: first the load pin, then the
+        # source/emitter pin (deterministic when the IR gives no hints).
+        if remaining:
+            pin_role[str(remaining[0] + 1)] = roles["load"]
+            remaining = remaining[1:]
+        if remaining:
+            pin_role[str(remaining[0] + 1)] = roles["gnd"]
+
+        usable = {num: pin for num, pin in pin_role.items() if pin in symbol_pins}
+        if len(usable) == 3:
+            aliases[ref] = usable
+            logger.info("MCP builder: pin aliases for %s (%s): %s", ref, f"{lib}:{sym}", usable)
+    return aliases
+
+
+# ---------------------------------------------------------------------------
+# MCP client helpers
+
+_POS_RE = re.compile(r"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)")
+
+
+class _McpSession:
+    """Small typed wrapper over an MCP client session for one server run."""
+
+    def __init__(self, session) -> None:
+        self._session = session
+        self.calls: List[str] = []
+
+    async def call(self, name: str, args: Dict[str, Any]) -> str:
+        self.calls.append(name)
+        result = await self._session.call_tool(name, args)
+        text = result.content[0].text if result.content else ""
+        if result.isError:
+            raise McpSchematicError(f"MCP tool {name} failed: {text[:400]}")
+        return text
+
+
+# ---------------------------------------------------------------------------
+# schematic file parsing for exact pin geometry
+#
+# The MCP server's get_component_pin_position applies a buggy transform, so
+# pin positions are computed locally from the saved .kicad_sch instead:
+# lib_symbols gives each pin's offset from the symbol origin, the instance's
+# (at x y rot) places it. Everything is placed unrotated, so the transform
+# reduces to a translation in practice.
+
+def _child_blocks(text: str, start: int, end: int) -> List[Tuple[str, int, int]]:
+    """Direct child s-expression blocks of the block spanning [start, end)."""
+    blocks = []
+    depth = 0
+    in_string = False
+    escaped = False
+    block_start = -1
+    i = start
+    while i < end:
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "(":
+            depth += 1
+            if depth == 2 and block_start < 0:
+                block_start = i
+        elif ch == ")":
+            if depth == 2 and block_start >= 0:
+                blocks.append((text[block_start:i + 1], block_start, i + 1))
+                block_start = -1
+            depth -= 1
+        i += 1
+    return blocks
+
+
+def _pin_offsets_from_lib_symbols(text: str) -> Dict[str, Dict[str, Tuple[float, float]]]:
+    """Map lib_id -> {pin_number: (dx, dy)} from the embedded lib_symbols block."""
+    lib_start = text.find("(lib_symbols")
+    if lib_start < 0:
+        return {}
+    open_paren = text.find("(", lib_start)
+    lib_end = _matching_paren(text, open_paren)
+    if lib_end < 0:
+        return {}
+
+    result: Dict[str, Dict[str, Tuple[float, float]]] = {}
+    for block, _s, _e in _child_blocks(text, open_paren, lib_end + 1):
+        name_match = re.match(r'\(\s*symbol\s+"([^"]+)"', block)
+        if not name_match:
+            continue
+        lib_id = name_match.group(1)
+        pins: Dict[str, Tuple[float, float]] = {}
+        # Pins can sit on the lib symbol itself or inside unit sub-symbols.
+        stack = [block]
+        while stack:
+            current = stack.pop()
+            for sub, _ss, _se in _child_blocks(current, 0, len(current)):
+                if re.match(r"\(\s*symbol\b", sub):
+                    stack.append(sub)
+            for pin_match in re.finditer(r"\(\s*pin\b", current):
+                pin_open = pin_match.start()
+                pin_close = _matching_paren(current, pin_open)
+                pin_block = current[pin_open:pin_close + 1]
+                at_match = re.search(
+                    r"\(\s*at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+-?[\d.]+)?\s*\)", pin_block
+                )
+                num_match = re.search(r'\(\s*number\s+"([^"]+)"', pin_block)
+                if at_match and num_match:
+                    pins[num_match.group(1)] = (
+                        float(at_match.group(1)),
+                        float(at_match.group(2)),
+                    )
+        if pins:
+            result[lib_id] = pins
+    return result
+
+
+def _symbol_instances(text: str) -> List[Dict[str, Any]]:
+    """Top-level symbol instances: lib_id, position, rotation, reference."""
+    lib_start = text.find("(lib_symbols")
+    open_paren = text.find("(", lib_start) if lib_start >= 0 else -1
+    lib_end = _matching_paren(text, open_paren) if open_paren >= 0 else -1
+    scan_from = lib_end + 1 if lib_end >= 0 else 0
+
+    instances = []
+    pos = scan_from
+    while True:
+        match = re.search(r"\n\s*\(symbol\b", text[pos:])
+        if not match:
+            break
+        block_open = pos + match.start() + 1
+        block_end = _matching_paren(text, text.find("(", block_open))
+        if block_end < 0:
+            break
+        block = text[block_open:block_end + 1]
+        pos = block_end + 1
+        lib_id_m = re.search(r'\(\s*lib_id\s+"([^"]+)"', block)
+        at_m = re.search(
+            r"\(\s*at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+(-?[\d.]+))?\s*\)", block
+        )
+        ref_m = re.search(r'\(\s*property\s+"Reference"\s+"([^"]+)"', block)
+        if lib_id_m and at_m and ref_m:
+            instances.append(
+                {
+                    "lib_id": lib_id_m.group(1),
+                    "x": float(at_m.group(1)),
+                    "y": float(at_m.group(2)),
+                    "rot": float(at_m.group(3) or 0),
+                    "ref": ref_m.group(1),
+                }
+            )
+    return instances
+
+
+def _pin_positions_from_sch(text: str) -> Dict[Tuple[str, str], Tuple[float, float]]:
+    """Exact {(ref, pin): (x, y)} for every placed symbol instance."""
+    lib_pins = _pin_offsets_from_lib_symbols(text)
+    positions: Dict[Tuple[str, str], Tuple[float, float]] = {}
+    for inst in _symbol_instances(text):
+        pins = lib_pins.get(inst["lib_id"])
+        if not pins:
+            continue
+        theta = radians(inst["rot"])
+        cos_t, sin_t = cos(theta), sin(theta)
+        for pin, (dx, dy) in pins.items():
+            # Lib symbols store pin offsets y-up while the sheet is y-down, so
+            # the offset is flipped before the (unused in practice) rotation.
+            rx = dx * cos_t - dy * sin_t
+            ry = -dx * sin_t - dy * cos_t
+            positions[(inst["ref"], pin)] = (
+                round(inst["x"] + rx, 4),
+                round(inst["y"] + ry, 4),
+            )
+    return positions
+
+
+# ---------------------------------------------------------------------------
+# netlist validation gate
+
+def _matching_paren(text: str, start: int) -> int:
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return -1
+
+
+def _parse_netlist_nets(net_text: str) -> List[Tuple[str, Set[Tuple[str, str]]]]:
+    """Return [(net_name, {(ref, pin), ...}), ...] from a kicadsexpr netlist."""
+    nets_start = net_text.find("(nets")
+    if nets_start < 0:
+        return []
+    nets_end = _matching_paren(net_text, net_text.find("(", nets_start))
+    block = net_text[nets_start:nets_end]
+
+    result: List[Tuple[str, Set[Tuple[str, str]]]] = []
+    pos = 0
+    while True:
+        match = re.search(r"\((?:net|net\s)\b", block[pos:])
+        if not match:
+            break
+        net_open = pos + match.start()
+        net_close = _matching_paren(block, net_open)
+        if net_close < 0:
+            break
+        body = block[net_open:net_close]
+        pos = net_close + 1
+        name_match = re.search(r'\(name\s+"([^"]*)"', body)
+        nodes = {
+            (m.group(1), m.group(2))
+            for m in re.finditer(r'\(node\s*\(ref\s+"([^"]+)"\)\s*\(pin\s+"([^"]+)"\)', body)
+        }
+        result.append((name_match.group(1) if name_match else "", nodes))
+    return result
+
+
+def _connectivity_matches(
+    ir_nets: List[Dict[str, Any]],
+    placed_refs: Set[str],
+    exported: List[Tuple[str, Set[Tuple[str, str]]]],
+    pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+    aliases: Dict[str, Dict[str, str]],
+    dropped_pins: Set[Tuple[str, str]],
+) -> bool:
+    """Compare the IR's net partition with the exported netlist partition.
+
+    Pins of components that were placed take part; power symbols (#PWR/#FLG)
+    and unconnected pins are ignored. Pins that share a coordinate on the
+    same symbol (e.g. stacked GND pins on some MCUs) are physically one node
+    and are merged on both sides before comparing.
+    """
+    ir_pin_nets: Dict[Tuple[str, str], str] = {}
+    for net in ir_nets:
+        if not isinstance(net, dict):
+            continue
+        name = str(net.get("name") or "NET")
+        for conn in net.get("connections", []) or []:
+            ref, _, pin = str(conn).rpartition(".")
+            if not ref or not pin:
+                continue
+            if ref not in placed_refs:
+                continue
+            if (ref, pin) in dropped_pins:
+                continue  # pin does not exist on the symbol; already warned
+            pin = aliases.get(ref, {}).get(pin, pin)
+            ir_pin_nets.setdefault((ref, pin), name)
+
+    exported_pin_nets: Dict[Tuple[str, str], str] = {}
+    for _name, nodes in exported:
+        for ref, pin in nodes:
+            if ref.startswith("#"):
+                continue
+            exported_pin_nets.setdefault((ref, pin), _name)
+
+    nodes = set(ir_pin_nets)
+    parent: Dict[Tuple[str, str], Tuple[str, str]] = {n: n for n in nodes}
+
+    def find(n: Tuple[str, str]) -> Tuple[str, str]:
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    def union(a: Tuple[str, str], b: Tuple[str, str]) -> None:
+        parent[find(a)] = find(b)
+
+    # IR side: pins sharing a net are one node.
+    nets_of: Dict[str, List[Tuple[str, str]]] = {}
+    for node, net_name in ir_pin_nets.items():
+        nets_of.setdefault(net_name, []).append(node)
+    for members in nets_of.values():
+        for other in members[1:]:
+            union(members[0], other)
+
+    # Symbol side: pins sharing a coordinate are physically one node.
+    by_coord: Dict[Tuple[float, float], List[Tuple[str, str]]] = {}
+    for node in nodes:
+        pos = pin_positions.get(node)
+        if pos is not None:
+            by_coord.setdefault(pos, []).append(node)
+    for members in by_coord.values():
+        for other in members[1:]:
+            union(members[0], other)
+
+    # Realized side: exported netlist membership (a pin placed but missing
+    # from the export stayed unconnected, which breaks its IR net).
+    for node in nodes:
+        if node not in exported_pin_nets:
+            exported_pin_nets[node] = f"__missing__{node[0]}_{node[1]}"
+    realized: Dict[str, List[Tuple[str, str]]] = {}
+    for node, net_name in exported_pin_nets.items():
+        if node in nodes:
+            realized.setdefault(net_name, []).append(node)
+    for members in realized.values():
+        for other in members[1:]:
+            union(members[0], other)
+
+    expected: Dict[Tuple[str, str], frozenset] = {}
+    for n in nodes:
+        expected.setdefault(find(n), set()).add(n)
+    groups = {frozenset(members) for members in expected.values()}
+
+    # The realized membership must refine... rather, equal the merged IR
+    # partition: every expected group must appear as one realized net and no
+    # realized net may join pins across expected groups.
+    ok = True
+    for net_name, members in realized.items():
+        roots = {find(m) for m in members}
+        if len(roots) > 1:
+            logger.warning(
+                "MCP netlist mismatch on %s: joins %s across different IR nets",
+                net_name, sorted(members),
+            )
+            ok = False
+    for members in groups:
+        realized_nets = {
+            exported_pin_nets.get(m) or f"__missing__{m[0]}_{m[1]}" for m in members
+        }
+        if len(realized_nets) > 1:
+            logger.warning(
+                "MCP netlist mismatch: %s split across realized nets %s",
+                sorted(members), sorted(realized_nets),
+            )
+            ok = False
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# wire routing
+#
+# Signal nets get real wires: a vertical trunk in a routing gutter between
+# component columns, one horizontal stub per member pin, junctions where
+# stubs meet the trunk. Power nets keep their power symbols. Nets whose
+# geometry would collide with foreign pins, labels, or other nets' wires
+# (collinear overlap, T-junction) fall back to label connectivity.
+
+_EPS = 0.01
+
+
+def _seg_horizontal(seg) -> bool:
+    return abs(seg[1] - seg[3]) < _EPS
+
+
+def _point_on_segment(px: float, py: float, seg) -> bool:
+    x1, y1, x2, y2 = seg
+    if _seg_horizontal(seg):
+        return (
+            abs(py - y1) < _EPS
+            and min(x1, x2) - _EPS <= px <= max(x1, x2) + _EPS
+        )
+    return (
+        abs(px - x1) < _EPS
+        and min(y1, y2) - _EPS <= py <= max(y1, y2) + _EPS
+    )
+
+
+def _segs_conflict(a, b) -> bool:
+    """True if the two wire segments would form an unintended connection.
+
+    Mid-wire crossings of perpendicular segments do not connect in KiCad;
+    any shared point that is an endpoint of either segment does (T-junction
+    or corner). Parallel segments connect when collinear ranges overlap.
+    """
+    def is_end(seg, px: float, py: float) -> bool:
+        return (
+            (abs(seg[0] - px) < _EPS and abs(seg[1] - py) < _EPS)
+            or (abs(seg[2] - px) < _EPS and abs(seg[3] - py) < _EPS)
+        )
+
+    ha, hb = _seg_horizontal(a), _seg_horizontal(b)
+    if ha != hb:
+        if ha:
+            h, v = a, b
+        else:
+            h, v = b, a
+        cx, cy = v[0], h[1]
+        if not _point_on_segment(cx, cy, h) or not _point_on_segment(cx, cy, v):
+            return False
+        return is_end(h, cx, cy) or is_end(v, cx, cy)
+    if ha:
+        if abs(a[1] - b[1]) >= _EPS:
+            return False
+        return not (max(a[0], a[2]) < min(b[0], b[2]) + _EPS or max(b[0], b[2]) < min(a[0], a[2]) + _EPS)
+    if abs(a[0] - b[0]) >= _EPS:
+        return False
+    return not (max(a[1], a[3]) < min(b[1], b[3]) + _EPS or max(b[1], b[3]) < min(a[1], a[3]) + _EPS)
+
+
+def _plan_wire_routes(
+    ir_nets: List[Dict[str, Any]],
+    placed_refs: Set[str],
+    aliases: Dict[str, Dict[str, str]],
+    pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+    columns_x: List[float],
+) -> Dict[str, Dict[str, Any]]:
+    """Plan wire routes for signal nets; conflicts fall back to labels."""
+    all_pin_points: Set[Tuple[float, float]] = set(pin_positions.values())
+
+    net_points: Dict[str, List[Tuple[float, float]]] = {}
+    for net in ir_nets:
+        if not isinstance(net, dict):
+            continue
+        name = str(net.get("name") or "")
+        if not name or _is_gnd(name) or _rail_symbol(name):
+            continue
+        points: List[Tuple[float, float]] = []
+        for conn in net.get("connections", []) or []:
+            ref, _, pin = str(conn).rpartition(".")
+            if ref and pin and ref in placed_refs:
+                pin = aliases.get(ref, {}).get(pin, pin)
+                pos = pin_positions.get((ref, pin))
+                if pos is not None:
+                    points.append(pos)
+        unique = sorted(set(points))
+        if len(unique) >= 2:
+            net_points[name] = unique
+
+    # Gutter trunk slots between (and beside) the component columns.
+    slots: List[float] = []
+    centers = sorted(columns_x) or [100.0]
+    slots.append(centers[0] - 25.0)
+    for a, b in zip(centers, centers[1:]):
+        middle = (a + b) / 2.0
+        for off in (0.0, 2.54, -2.54, 5.08, -5.08, 7.62, -7.62):
+            slots.append(middle + off)
+    slots.append(centers[-1] + 25.0)
+    slots = [round(s, 3) for s in slots]
+
+    plans: Dict[str, Dict[str, Any]] = {}
+    used_slots: Set[float] = set()
+    for name in sorted(net_points, key=lambda n: -len(net_points[n])):
+        points = net_points[name]
+        best_slot, best_cost = None, None
+        for slot in slots:
+            if slot in used_slots:
+                continue
+            cost = sum(abs(px - slot) for px, _py in points)
+            if best_cost is None or cost < best_cost:
+                best_slot, best_cost = slot, cost
+        if best_slot is None:
+            continue
+        used_slots.add(best_slot)
+
+        segments = []
+        ys = {py for _px, py in points}
+        for px, py in points:
+            if abs(px - best_slot) > _EPS:
+                segments.append((px, py, best_slot, py))
+        trunk = (best_slot, min(ys), best_slot, max(ys))
+        if abs(trunk[1] - trunk[3]) > _EPS:
+            segments.append(trunk)
+        junctions = [(best_slot, py) for py in ys]
+        plans[name] = {"segments": segments, "junctions": junctions, "points": set(points)}
+
+    # Conflict resolution: drop nets whose geometry would touch foreign pins
+    # or other nets' wires, then drop anything that conflicts with what
+    # remains, until stable.
+    while True:
+        conflicted = set()
+        names = list(plans)
+        for name in names:
+            own = plans[name]["points"]
+            for seg in plans[name]["segments"]:
+                for px, py in all_pin_points:
+                    if (px, py) in own:
+                        continue
+                    if _point_on_segment(px, py, seg):
+                        conflicted.add(name)
+                        break
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                if a in conflicted or b in conflicted:
+                    continue
+                for seg_a in plans[a]["segments"]:
+                    for seg_b in plans[b]["segments"]:
+                        if _segs_conflict(seg_a, seg_b):
+                            conflicted.add(a)
+                            conflicted.add(b)
+                            break
+                    if a in conflicted or b in conflicted:
+                        break
+        if not conflicted:
+            break
+        for name in conflicted:
+            logger.info("MCP wiring: net %s falls back to labels (geometry conflict)", name)
+            del plans[name]
+
+    return plans
+
+def _crop_svg_to_content(svg: str) -> str:
+    """Crop KiCad's page-sized SVG viewBox down to visible schematic content."""
+    if not svg:
+        return svg
+
+    number = r"[-+]?(?:\d+\.\d+|\d+|\.\d+)(?:[eE][-+]?\d+)?"
+    points: List[Tuple[float, float]] = []
+
+    def add_point(x: Any, y: Any) -> None:
+        try:
+            points.append((float(x), float(y)))
+        except (TypeError, ValueError):
+            pass
+
+    def attr(tag: str, name: str) -> Optional[str]:
+        match = re.search(rf'\b{name}="([^"]+)"', tag)
+        return match.group(1) if match else None
+
+    def hidden(tag: str) -> bool:
+        return (
+            'opacity="0"' in tag
+            or 'stroke-opacity="0"' in tag
+            or 'display="none"' in tag
+            or 'visibility="hidden"' in tag
+        )
+
+    for tag in re.findall(r"<path\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
+        if hidden(tag):
+            continue
+        values = re.findall(number, attr(tag, "d") or "")
+        for i in range(0, len(values) - 1, 2):
+            add_point(values[i], values[i + 1])
+
+    for tag in re.findall(r"<(?:polyline|polygon)\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
+        if hidden(tag):
+            continue
+        values = re.findall(number, attr(tag, "points") or "")
+        for i in range(0, len(values) - 1, 2):
+            add_point(values[i], values[i + 1])
+
+    for tag in re.findall(r"<line\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
+        if hidden(tag):
+            continue
+        add_point(attr(tag, "x1"), attr(tag, "y1"))
+        add_point(attr(tag, "x2"), attr(tag, "y2"))
+
+    for tag in re.findall(r"<rect\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
+        if hidden(tag):
+            continue
+        try:
+            x, y = float(attr(tag, "x") or 0), float(attr(tag, "y") or 0)
+            w, h = float(attr(tag, "width") or 0), float(attr(tag, "height") or 0)
+        except ValueError:
+            continue
+        if x == 0 and y == 0 and w > 200 and h > 150:
+            continue
+        add_point(x, y)
+        add_point(x + w, y + h)
+
+    for tag in re.findall(r"<circle\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
+        if hidden(tag):
+            continue
+        try:
+            cx, cy = float(attr(tag, "cx") or 0), float(attr(tag, "cy") or 0)
+            r = float(attr(tag, "r") or 0)
+        except ValueError:
+            continue
+        add_point(cx - r, cy - r)
+        add_point(cx + r, cy + r)
+
+    for tag in re.findall(r"<text\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
+        if hidden(tag):
+            continue
+        add_point(attr(tag, "x"), attr(tag, "y"))
+
+    if not points:
+        return svg
+
+    min_x = min(x for x, _ in points)
+    min_y = min(y for _, y in points)
+    max_x = max(x for x, _ in points)
+    max_y = max(y for _, y in points)
+    if max_x <= min_x or max_y <= min_y:
+        return svg
+
+    pad = 4.0
+    min_x, min_y, max_x, max_y = min_x - pad, min_y - pad, max_x + pad, max_y + pad
+    width, height = max_x - min_x, max_y - min_y
+    svg = re.sub(r'\swidth="[^"]+"', f' width="{width:.4f}mm"', svg, count=1)
+    svg = re.sub(r'\sheight="[^"]+"', f' height="{height:.4f}mm"', svg, count=1)
+    svg = re.sub(
+        r'\sviewBox="[^"]+"',
+        f' viewBox="{min_x:.4f} {min_y:.4f} {width:.4f} {height:.4f}"',
+        svg,
+        count=1,
+    )
+    return svg
+
+
+def _summarize_erc(erc_text: str) -> Dict[str, Any]:
+    if not erc_text:
+        return {"status": "unknown", "errors": 0, "warnings": 0, "violations": []}
+    try:
+        data = json.loads(erc_text)
+    except json.JSONDecodeError:
+        return {"status": "unknown", "errors": 0, "warnings": 0, "violations": []}
+
+    violations: List[Dict[str, Any]] = []
+    errors = 0
+    warnings = 0
+    for sheet in data.get("sheets", []):
+        for violation in sheet.get("violations", []):
+            severity = violation.get("severity", "warning")
+            if severity == "error":
+                errors += 1
+            else:
+                warnings += 1
+            violations.append(
+                {
+                    "type": violation.get("type"),
+                    "severity": severity,
+                    "description": violation.get("description"),
+                }
+            )
+    status = "passed" if errors == 0 else "failed"
+    return {
+        "status": status,
+        "errors": errors,
+        "warnings": warnings,
+        "violations": violations[:20],
+    }
+
+
+# ---------------------------------------------------------------------------
+# main entry point
+
+async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate KiCad schematic artifacts from CircuitIR through the KiCad MCP server."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    if not ir.get("supported", False):
+        raise McpSchematicError("Unsupported CircuitIR cannot be exported to KiCad")
+    if not mcp_backend_available():
+        raise McpSchematicError("mcp-kicad-sch-api is not installed in this venv")
+
+    kicad_root, kicad_cli = _find_kicad()
+
+    work_root = Path(tempfile.gettempdir()) / "cirgpt_kicad"
+    work_root.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(tempfile.mkdtemp(prefix="mcp_", dir=str(work_root)))
+
+    circuit_type = str(ir.get("circuit_type") or "circuit")
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in circuit_type) or "circuit"
+    sch_path = work_dir / f"{safe_name}_{os.getpid()}.kicad_sch"
+    svg_dir = work_dir / "svg"
+    svg_dir.mkdir(exist_ok=True)
+    erc_path = work_dir / f"{safe_name}.erc.json"
+    net_path = work_dir / f"{safe_name}.net"
+
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "mcp_kicad_sch_api"],
+        env=_server_env(kicad_root, kicad_cli),
+    )
+
+    components = [
+        comp
+        for comp in ir.get("components", [])
+        if isinstance(comp, dict) and str(comp.get("type") or "").lower() not in _SOURCE_TYPES
+    ]
+    placed: List[Tuple[Dict[str, Any], str, str]] = []  # (comp, lib, sym)
+    skipped: List[str] = []
+    for comp in components:
+        lib_sym = _symbol_for(comp)
+        if lib_sym is None:
+            skipped.append(str(comp.get("ref") or comp.get("type")))
+            continue
+        placed.append((comp, lib_sym[0], lib_sym[1]))
+    if not placed:
+        raise McpSchematicError("No IR components mapped onto KiCad library symbols")
+
+    placed_refs = {str(comp.get("ref")) for comp, _lib, _sym in placed if comp.get("ref")}
+
+    # Layout: one column per subsystem (IR order), components stacked. Wide
+    # ICs (28-pin DIPs etc.) need generous pitch; retries with larger spacing
+    # if any two placed pins land on the same coordinate.
+    subsystem_order: List[str] = []
+    for comp, _lib, _sym in placed:
+        sub = str(comp.get("subsystem") or "other")
+        if sub not in subsystem_order:
+            subsystem_order.append(sub)
+
+    def layout_positions(col_dx: float, row_dy: float) -> Dict[str, Tuple[float, float]]:
+        positions: Dict[str, Tuple[float, float]] = {}
+        row_of: Dict[str, int] = {}
+        for comp, _lib, _sym in placed:
+            sub = str(comp.get("subsystem") or "other")
+            col = subsystem_order.index(sub)
+            row = row_of.get(sub, 0)
+            row_of[sub] = row + 1
+            ref = str(comp.get("ref"))
+            positions[ref] = (50.0 + col * col_dx, 60.0 + row * row_dy)
+        return positions
+
+    pwr_i = 0
+    pin_positions: Dict[Tuple[str, str], Tuple[float, float]] = {}
+    columns_x: List[float] = []
+
+    async with asyncio.timeout(240):
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                mcp = _McpSession(session)
+
+                placed_ok = False
+                for col_dx, row_dy in ((55.0, 42.0), (75.0, 60.0), (100.0, 80.0)):
+                    columns_x = [50.0 + i * col_dx for i in range(len(subsystem_order))]
+                    await mcp.call("create_schematic", {"name": safe_name})
+                    positions = layout_positions(col_dx, row_dy)
+                    for idx, (comp, lib, sym) in enumerate(placed):
+                        ref = str(comp.get("ref") or f"U{idx + 1}")
+                        x, y = positions.get(ref, (50.0, 60.0))
+                        await mcp.call(
+                            "add_component",
+                            {
+                                "lib_id": f"{lib}:{sym}",
+                                "reference": ref,
+                                "value": _fmt_value(comp),
+                                "position": [round(x, 3), round(y, 3)],
+                                "footprint": _footprint_for(lib, sym, comp),
+                            },
+                        )
+
+                    # Save so the exact (grid-snapped) symbol geometry is on
+                    # disk, then compute pin positions from the file itself:
+                    # the server's pin-position tool applies a buggy transform.
+                    await mcp.call("save_schematic", {"file_path": str(sch_path)})
+                    pin_positions = _pin_positions_from_sch(
+                        sch_path.read_text(encoding="utf-8", errors="replace")
+                    )
+
+                    by_point: Dict[Tuple[float, float], Tuple[str, str]] = {}
+                    collision = False
+                    for node, pos in pin_positions.items():
+                        other = by_point.get(pos)
+                        if other is not None and other != node:
+                            # Same-symbol coincident pins (stacked GND pins on
+                            # some MCUs) are the symbol's own design, not a
+                            # layout failure.
+                            if other[0] != node[0]:
+                                logger.info(
+                                    "MCP layout collision at %s: %s vs %s; widening grid",
+                                    pos, other, node,
+                                )
+                                collision = True
+                                break
+                        else:
+                            by_point[pos] = node
+                    if not collision:
+                        placed_ok = True
+                        break
+
+                if not placed_ok:
+                    raise McpSchematicError(
+                        "Could not place components without pin collisions"
+                    )
+
+                aliases = _pin_aliases(placed, ir.get("nets") or [], pin_positions)
+                wire_plans = _plan_wire_routes(
+                    ir.get("nets") or [], placed_refs, aliases, pin_positions, columns_x
+                )
+
+                def pin_pos(ref: str, pin: str) -> Optional[Tuple[float, float]]:
+                    pos = pin_positions.get((ref, pin))
+                    if pos is None:
+                        pos = pin_positions.get((ref, aliases.get(ref, {}).get(pin, pin)))
+                    return pos
+
+                # Connectivity: signal nets routed above get real wires;
+                # power nets get power symbols on each member pin (they merge
+                # globally by value); the rest get local labels. Pins that do
+                # not exist on the mapped symbol are dropped with a warning.
+                dropped_pins: Set[Tuple[str, str]] = set()
+                for net in ir.get("nets", []) or []:
+                    if not isinstance(net, dict):
+                        continue
+                    net_name = str(net.get("name") or "")
+                    members = []
+                    seen_points: Set[Tuple[float, float]] = set()
+                    for conn in net.get("connections", []) or []:
+                        ref, _, pin = str(conn).rpartition(".")
+                        if ref and pin and ref in placed_refs:
+                            pos = pin_pos(ref, pin)
+                            if pos is None:
+                                dropped_pins.add((ref, pin))
+                                logger.warning(
+                                    "MCP builder: pin %s.%s not found on symbol; skipped", ref, pin
+                                )
+                            elif pos not in seen_points:
+                                # Coincident pins (same point) need one label
+                                # only; every pin at that point joins the net.
+                                seen_points.add(pos)
+                                members.append((ref, pin, pos))
+                    if not members:
+                        continue
+
+                    route = wire_plans.get(net_name)
+                    if route is not None:
+                        # Real wires: stubs from member pins to a per-net trunk.
+                        for seg in route["segments"]:
+                            await mcp.call(
+                                "add_wire",
+                                {
+                                    "start_pos": [seg[0], seg[1]],
+                                    "end_pos": [seg[2], seg[3]],
+                                },
+                            )
+                        for jx, jy in route["junctions"]:
+                            await mcp.call("add_junction", {"position": [jx, jy]})
+                        continue
+
+                    rail = "GND" if _is_gnd(net_name) else _rail_symbol(net_name)
+                    if rail:
+                        for ref, pin, pos in members:
+                            pwr_i += 1
+                            await mcp.call(
+                                "add_component",
+                                {
+                                    "lib_id": f"power:{rail}",
+                                    "reference": f"#PWR{pwr_i:02d}",
+                                    "value": rail,
+                                    "position": [pos[0], pos[1]],
+                                    "footprint": "",
+                                },
+                            )
+                        # One PWR_FLAG on the first member of every power net
+                        # (ground included) keeps ERC quiet about undriven
+                        # power inputs.
+                        ref, pin, pos = members[0]
+                        pwr_i += 1
+                        await mcp.call(
+                            "add_component",
+                            {
+                                "lib_id": "power:PWR_FLAG",
+                                "reference": f"#FLG{pwr_i:02d}",
+                                "value": rail,
+                                "position": [pos[0], pos[1]],
+                                "footprint": "",
+                            },
+                        )
+                    else:
+                        label = _safe_label(net_name)
+                        for _ref, _pin, pos in members:
+                            await mcp.call(
+                                "add_label",
+                                {"text": label, "position": [pos[0], pos[1]]},
+                            )
+
+                await mcp.call("save_schematic", {"file_path": str(sch_path)})
+
+    if not sch_path.exists():
+        raise McpSchematicError("MCP server did not save a schematic file")
+
+    # Gate: the exported netlist must preserve the IR's connectivity before
+    # the artifacts are accepted.
+    net_run = subprocess.run(
+        [str(kicad_cli), "sch", "export", "netlist", "--format", "kicadsexpr",
+         "-o", str(net_path), str(sch_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    if net_run.returncode != 0 or not net_path.exists():
+        raise McpSchematicError(f"kicad-cli netlist export failed: {net_run.stderr[:300]}")
+    exported_nets = _parse_netlist_nets(net_path.read_text(encoding="utf-8", errors="replace"))
+    if not _connectivity_matches(
+        ir.get("nets") or [], placed_refs, exported_nets, pin_positions, aliases, dropped_pins
+    ):
+        raise McpSchematicError(
+            "MCP schematic connectivity does not match the CircuitIR nets; rejected"
+        )
+
+    svg_run = subprocess.run(
+        [str(kicad_cli), "sch", "export", "svg", "--exclude-drawing-sheet",
+         "--no-background-color", "-o", str(svg_dir), str(sch_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    svg_files = sorted(svg_dir.glob("*.svg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not svg_files:
+        raise McpSchematicError(f"kicad-cli SVG export produced nothing: {svg_run.stderr[:300]}")
+    svg = _crop_svg_to_content(
+        svg_files[0].read_text(encoding="utf-8", errors="replace")
+    )
+    if not svg:
+        raise McpSchematicError("SVG export is empty")
+
+    erc_run = subprocess.run(
+        [str(kicad_cli), "sch", "erc", "--format", "json", "-o", str(erc_path), str(sch_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    erc_json = erc_path.read_text(encoding="utf-8", errors="replace") if erc_path.exists() else ""
+
+    result = {
+        "success": True,
+        "svg": svg,
+        "kicad_schematic": sch_path.read_text(encoding="utf-8", errors="replace"),
+        "skidl_netlist": net_path.read_text(encoding="utf-8", errors="replace"),
+        "erc_json": erc_json,
+        "erc_summary": _summarize_erc(erc_json),
+        "paths": {
+            "schematic": str(sch_path),
+            "netlist": str(net_path),
+            "svg": str(svg_files[0]),
+            "erc": str(erc_path) if erc_path.exists() else None,
+        },
+        "commands": {
+            "svg_returncode": svg_run.returncode,
+            "svg_stderr": svg_run.stderr,
+            "erc_returncode": erc_run.returncode,
+            "erc_stderr": erc_run.stderr,
+            "netlist_returncode": net_run.returncode,
+        },
+        "generator": "mcp:mcp-kicad-sch-api",
+        "layout": "mcp-trunk-wired",
+        "toolchain": {
+            "mcp_server": "mcp-kicad-sch-api",
+            "mcp_tool_calls": len(placed) + pwr_i,
+            "kicad_cli": str(kicad_cli),
+        },
+        "working_directory": str(work_dir),
+        "skipped_components": skipped,
+    }
+    return result

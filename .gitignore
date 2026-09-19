@@ -16,6 +16,9 @@ parts/
 sdist/
 var/
 wheels/
+# Vendored wheel for the KiCad MCP server (not published on PyPI)
+!eda_tools/wheels/
+!eda_tools/wheels/*.whl
 *.egg-info/
 .installed.cfg
 *.egg

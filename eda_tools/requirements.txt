@@ -6,6 +6,13 @@ uvicorn[standard]==0.27.0
 # skidl 2.2.1's KiCad 9 schematic generator is a no-op stub; 2.2.3 implements it
 skidl==2.2.3
 
+# KiCad MCP schematic generation (default backend, SKiDL stays as fallback).
+# mcp must stay <2: the vendored MCP server wheel uses the mcp 1.x low-level
+# Server API which mcp 2.x removed.
+mcp>=1.0.0,<2
+kicad-sch-api>=0.5.0
+./wheels/mcp_kicad_sch_api-0.2.2-py3-none-any.whl
+
 # KiCad integration (requires KiCad to be installed)
 # Python bindings for KiCad - NOT installed via pip
 # pcbnew comes from KiCad installation

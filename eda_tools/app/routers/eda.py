@@ -15,6 +15,7 @@ from spice_parser import SPICEParser
 from svg_generator import SVGSchematicGenerator
 from ir_schematic import generate_ir_schematic_svg
 from kicad_artifacts import detect_kicad_toolchain, generate_kicad_artifacts
+from mcp_schematic import generate_kicad_artifacts_via_mcp, mcp_backend_available
 from pyspice.simulator import simulate_circuit
 from kicad.pcb_generator import generate_pcb
 from bom.bom_generator import generate_bom
@@ -23,6 +24,11 @@ from circuit_ir import generate_kicad_pcb_preview, generate_spice_netlist
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/eda", tags=["EDA"])
+
+
+def _schematic_backend() -> str:
+    """Preferred schematic generator: mcp (default) | skidl."""
+    return os.environ.get("CIRGPT_SCHEMATIC_BACKEND", "mcp").strip().lower() or "mcp"
 
 
 class SchematicRequest(BaseModel):
@@ -94,14 +100,23 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
         logger.info("Generating schematic with industrial-grade pipeline")
 
         if request.circuit_ir:
-            # Real KiCad-symbol schematic first, for every supported IR type
-            # (the generic builder maps free-form components onto library
-            # symbols). Falls back to the paged/generic renderers on failure.
-            try:
-                kicad_result = generate_kicad_artifacts(request.circuit_ir)
-            except Exception as e:
-                logger.warning(f"KiCad/SKiDL schematic generation failed, falling back: {e}")
-                kicad_result = None
+            # MCP-driven KiCad authoring first (validated against the IR's
+            # nets), then the SKiDL pipeline, then the paged/generic SVG
+            # renderers. CIRGPT_SCHEMATIC_BACKEND=skidl skips the MCP path.
+            kicad_result = None
+            backend = _schematic_backend()
+            if backend != "skidl" and mcp_backend_available():
+                try:
+                    kicad_result = await generate_kicad_artifacts_via_mcp(request.circuit_ir)
+                except Exception as e:
+                    logger.warning(f"KiCad MCP schematic generation failed, falling back: {e}")
+                    kicad_result = None
+            if kicad_result is None:
+                try:
+                    kicad_result = generate_kicad_artifacts(request.circuit_ir)
+                except Exception as e:
+                    logger.warning(f"KiCad/SKiDL schematic generation failed, falling back: {e}")
+                    kicad_result = None
 
             if kicad_result and kicad_result.get("svg"):
                 draft_paged = None
@@ -127,7 +142,11 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                     "title": request.circuit_ir.get("title", "Circuit"),
                     "components": len(request.circuit_ir.get("components", [])),
                     "nets": len(request.circuit_ir.get("nets", [])),
-                    "algorithm": "SKiDL circuit capture + KiCad CLI SVG export",
+                    "algorithm": (
+                        "KiCad MCP server authoring + KiCad CLI SVG export"
+                        if str(kicad_result.get("generator", "")).startswith("mcp:")
+                        else "SKiDL circuit capture + KiCad CLI SVG export"
+                    ),
                     "generator": kicad_result.get("generator", "skidl+kicad-cli"),
                     "erc": kicad_result.get("erc_summary"),
                     "layout": kicad_result.get("layout"),
@@ -381,9 +400,15 @@ async def list_eda_tools() -> Dict[str, Any]:
         return {
             "tools": [
                 {
+                    "name": "KiCad MCP (mcp-kicad-sch-api)",
+                    "version": "0.2.2" if mcp_backend_available() else "not installed",
+                    "description": "KiCad schematic authoring through the KiCad MCP server",
+                    "status": "active" if mcp_backend_available() else "degraded"
+                },
+                {
                     "name": "SKiDL",
                     "version": skidl.get("version", "unknown"),
-                    "description": "Schematic capture and KiCad netlist generation",
+                    "description": "Schematic capture and KiCad netlist generation (fallback)",
                     "status": "active" if skidl.get("status") == "ok" else "degraded"
                 },
                 {
