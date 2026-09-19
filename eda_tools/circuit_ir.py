@@ -55,14 +55,16 @@ def generate_spice_netlist(ir: Dict[str, Any]) -> str:
     if not ir.get("supported", False):
         raise ValueError("Unsupported CircuitIR cannot be converted to SPICE")
 
-    circuit_type = ir.get("circuit_type")
+    circuit_type = ir.get("circuit_type") or ""
     if circuit_type == "led_current_limiter":
         return _led_netlist(ir)
     if circuit_type == "capacitor_discharge_led":
         return _capacitor_discharge_led_netlist(ir)
     if circuit_type == "rc_low_pass_filter":
         return _rc_netlist(ir)
-    if circuit_type == "555_timer_blinker":
+    # The v2 parser invents free-form circuit_type names ("555_timer_astable",
+    # "555_blinker_9v" ...), so match the 555 family by keyword, not by exact name.
+    if "555" in circuit_type:
         return _timer_netlist(ir)
     if circuit_type in {"opamp_inverting", "opamp_non_inverting"}:
         return _opamp_netlist(ir)
@@ -148,27 +150,98 @@ def _rc_netlist(ir: Dict[str, Any]) -> str:
 
 
 def _timer_netlist(ir: Dict[str, Any]) -> str:
+    """Real NE555 astable netlist with an embedded behavioral macro-model.
+
+    Component values are recovered from the IR by node signature (RA: VCC-DISCH,
+    RB: DISCH-THRES, C1: THRES-GND) so free-form parser output still maps
+    correctly; sensible astable defaults cover anything missing.
+    """
+    comps = ir.get("components", [])
+
     supply = _value(_role(ir, "supply"), 9.0)
-    r1 = _value(_role(ir, "timing_ra"), 1_000.0)
-    r2 = _value(_role(ir, "timing_rb"), 71_500.0)
-    c1 = _value(_role(ir, "timing_capacitor"), 10e-6)
-    rled = _value(_role(ir, "led_resistor"), 470.0)
-    frequency = float(ir.get("constraints", {}).get("target_frequency_hz", 1.0))
-    period = 1.0 / max(frequency, 0.001)
-    half = period / 2.0
-    duration = max(period * 3.0, 0.2)
-    step = max(period / 200.0, 1e-4)
+    ra = 10_000.0
+    rb = 47_000.0
+    timing_caps: list[float] = []
+    has_led = False
+    rled = 470.0
+
+    for c in comps:
+        nodes = {str(n).upper() for n in (c.get("nodes") or [])}
+        ctype = (c.get("type") or "").lower()
+        try:
+            val = float(c.get("value") or 0)
+        except (TypeError, ValueError):
+            val = 0.0
+        if ctype in {"dc_voltage_source", "dc_source", "voltage_source"} and val > 0:
+            supply = val
+        elif ctype == "resistor" and val > 0:
+            if {"VCC", "DISCH"} <= nodes:
+                ra = val
+            elif "DISCH" in nodes and (nodes & {"THRES", "THR", "TRIG"}):
+                rb = val
+            elif "OUT" in nodes and "VCC" not in nodes:
+                rled = val
+        elif ctype == "capacitor" and val > 0:
+            if (nodes & {"THRES", "THR", "TRIG"}) and "0" in nodes:
+                timing_caps.append(val)
+        elif ctype == "led":
+            has_led = True
+
+    ct = max(timing_caps) if timing_caps else 10e-6
+
+    period = 0.693 * (ra + 2 * rb) * ct
+    duration = max(period * 4.0, 2e-3)
+    step = max(period / 200.0, 1e-6)
+    freq = 1.0 / period if period > 0 else 0.0
 
     lines = _header(ir)
     lines.extend([
+        "* Real NE555 astable multivibrator (behavioral macro-model)",
+        f"* f = 1/(ln(2)*(RA+2*RB)*C1) = {freq:.3g} Hz",
+        "",
         f"V1 VCC 0 DC {supply:g}",
-        f"R1 VCC DISCH {_spice_value(r1, 'ohm')}",
-        f"R2 DISCH THRESH {_spice_value(r2, 'ohm')}",
-        f"C1 THRESH 0 {_spice_value(c1, 'F')}",
-        f"VOSC OUT 0 PULSE(0 {supply:g} 0 1m 1m {half:g} {period:g})",
-        f"R3 OUT LED_A {_spice_value(rled, 'ohm')}",
-        "D1 LED_A 0 LED",
-        ".model LED D(Is=1e-12 Rs=10 N=1.8 Cjo=10p Vj=2.0)",
+        f"RA VCC DISCH {_spice_value(ra, 'ohm')}",
+        f"RB DISCH THR {_spice_value(rb, 'ohm')}",
+        f"C1 THR 0 {_spice_value(ct, 'F')}",
+        "C2 CTRL 0 10n",
+        "R3 RESET VCC 10k",
+        "X1 VCC 0 THR OUT RESET CTRL THR DISCH NE555",
+    ])
+    if has_led:
+        lines.extend([
+            f"RL1 OUT LED_A {_spice_value(rled, 'ohm')}",
+            "D1 LED_A 0 LED",
+            ".model LED D(Is=1e-12 Rs=10 N=1.8 Cjo=10p Vj=2.0)",
+        ])
+    lines.extend([
+        ".print tran v(OUT) v(THR)",
+        ".model SW555 sw vt=2.5 roff=10meg ron=10",
+        "",
+        "* NE555 behavioral macro-model",
+        "* pins: VCC GND TRIG OUT RESETn CTRL THRES DISCH",
+        "* internal 3x5k divider biases CTRL to 2/3 VCC when the pin floats",
+        ".subckt NE555 VCC GND TRIG OUT RESETN CTRL THRES DISCH",
+        "RDIV1 VCC CTRL 5k",
+        "RDIV2 CTRL MID 5k",
+        "RDIV3 MID GND 5k",
+        "* comparators: set when TRIG < CTRL/2, reset when THRES > CTRL",
+        "BSET SETN 0 V = (V(TRIG) < V(CTRL)/2) * V(VCC)",
+        "BRST RSTN 0 V = (V(THRES) > V(CTRL)) * V(VCC)",
+        "BRES RESN 0 V = (V(RESETN) < 0.7) * V(VCC)",
+        "* SR latch: cross-coupled switch inverters (QA high = OUT high)",
+        "RLA VCC QA 10k",
+        "SLA QA 0 QB 0 SW555",
+        "RLB VCC QB 10k",
+        "SLB QB 0 QA 0 SW555",
+        "SSET QA VCC SETN 0 SW555",
+        "SRST QA 0 RSTN 0 SW555",
+        "SRES QA 0 RESN 0 SW555",
+        "* output stage stand-in",
+        "BOUT OUT 0 V = V(QA)",
+        "* open-collector discharge: ON while OUT is low (QB high)",
+        "SDIS DISCH 0 QB 0 SW555",
+        ".ends",
+        "",
         f".tran {step:g} {duration:g}",
         ".end",
     ])

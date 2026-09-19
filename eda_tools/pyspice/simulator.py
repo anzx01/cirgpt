@@ -24,7 +24,7 @@ def _find_ngspice() -> Optional[str]:
         try:
             subprocess.run(
                 [candidate, "--version"],
-                capture_output=True, timeout=5
+                capture_output=True, timeout=15
             )
             return candidate
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -39,10 +39,54 @@ else:
     logger.warning("ngspice not found in PATH. Simulation will use degraded analytical previews.")
 
 
+def _ngspice_bin() -> Optional[str]:
+    """Resolve ngspice on demand; retries discovery if the import-time probe failed.
+
+    The first run of an unsigned exe can exceed the probe timeout (e.g. a cold
+    antivirus scan right after service start), which would otherwise pin
+    NGSPICE_BIN to None for the life of the process.
+    """
+    global NGSPICE_BIN
+    if NGSPICE_BIN is None:
+        NGSPICE_BIN = _find_ngspice()
+        if NGSPICE_BIN:
+            logger.info(f"ngspice found on retry: {NGSPICE_BIN}")
+    return NGSPICE_BIN
+
+
+_NODE_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NON_NODE_KEYWORDS = {"dc", "ac", "pulse", "sin", "tran", "led", "0"}
+
+
+def _extract_nodes(netlist: str) -> List[str]:
+    """Collect node names from two-terminal element lines (heuristic).
+
+    Element lines look like ``R1 N1 N2 1k`` / ``V1 N1 0 DC 5`` / ``D1 N1 N2 MODEL``:
+    tokens 1 and 2 are the nodes. Ground ('0') and value/model keywords are skipped.
+    """
+    nodes: List[str] = []
+    seen = set()
+    for line in netlist.splitlines():
+        s = line.strip()
+        if not s or s[0] in "*+.xX":
+            continue
+        tokens = s.split()
+        if not _NODE_TOKEN_RE.match(tokens[0]):
+            continue
+        for t in tokens[1:3]:
+            if _NODE_TOKEN_RE.match(t) and t.lower() not in _NON_NODE_KEYWORDS and t not in seen:
+                seen.add(t)
+                nodes.append(t)
+    return nodes
+
+
 def _parse_rawspice(raw_text: str) -> Dict[str, Any]:
     """
     Parse ngspice plain-text output (.print tran) into structured data.
     Returns dict with keys: time, voltages, currents.
+
+    ngspice batch ASCII tables are "Index <tab> time <tab> values...";
+    the index column is skipped so the time axis is real seconds.
     """
     time_vals: List[float] = []
     node_data: Dict[str, List[float]] = {}
@@ -52,15 +96,16 @@ def _parse_rawspice(raw_text: str) -> Dict[str, Any]:
         if not line or line.startswith("*") or line.startswith("."):
             continue
         parts = line.split()
-        if len(parts) < 2:
+        if len(parts) < 3:  # index + time + at least one value
             continue
         try:
             vals = [float(p) for p in parts]
         except ValueError:
             continue
-        if not time_vals or vals[0] >= time_vals[-1]:
-            time_vals.append(vals[0])
-            for i, v in enumerate(vals[1:], start=1):
+        t = vals[1]
+        if not time_vals or t >= time_vals[-1]:
+            time_vals.append(t)
+            for i, v in enumerate(vals[2:], start=1):
                 key = f"node_{i}"
                 node_data.setdefault(key, []).append(v)
 
@@ -81,7 +126,8 @@ class CircuitSimulator:
         """
         logger.info("Starting circuit simulation")
 
-        if NGSPICE_BIN is None:
+        ngspice_bin = _ngspice_bin()
+        if ngspice_bin is None:
             logger.warning("ngspice unavailable, returning degraded analytical preview")
             return self._degraded_results(netlist, "ngspice executable not found in PATH")
 
@@ -95,7 +141,7 @@ class CircuitSimulator:
 
             try:
                 proc = subprocess.run(
-                    [NGSPICE_BIN, "-b", "-o", out_path, cir_path],
+                    [ngspice_bin, "-b", "-o", out_path, cir_path],
                     capture_output=True, text=True, timeout=60
                 )
                 raw = ""
@@ -129,15 +175,21 @@ class CircuitSimulator:
                 return self._degraded_results(netlist, error=str(e))
 
     def _ensure_print_command(self, netlist: str) -> str:
-        """Add .print tran if the netlist lacks output commands."""
+        """Add .print tran if the netlist lacks output commands.
+
+        ngspice batch mode does not accept the v(*) wildcard in .print, so the
+        node names are enumerated from the element lines explicitly.
+        """
         lower = netlist.lower()
         if ".print" not in lower and ".probe" not in lower:
+            nodes = _extract_nodes(netlist)[:8] or ["out"]
             lines = netlist.rstrip().splitlines()
             end_idx = next(
                 (i for i, l in enumerate(lines) if l.strip().lower() == ".end"),
                 len(lines)
             )
-            lines.insert(end_idx, ".print tran v(*)")
+            print_cmd = ".print tran " + " ".join(f"v({n})" for n in nodes)
+            lines.insert(end_idx, print_cmd)
             return "\n".join(lines)
         return netlist
 

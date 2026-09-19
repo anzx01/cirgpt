@@ -90,7 +90,9 @@ async def parse_description_with_deepseek(
         "response_format": {"type": "json_object"},
         "thinking": {"type": "disabled"},
         "temperature": 0.1,
-        "max_tokens": 4000,
+        # Complex multi-subsystem circuits exceed 4000 tokens of JSON and get
+        # truncated mid-string; 8192 leaves headroom.
+        "max_tokens": 8192,
     }
 
     async with httpx.AsyncClient(timeout=settings.DEEPSEEK_TIMEOUT_SECONDS) as client:

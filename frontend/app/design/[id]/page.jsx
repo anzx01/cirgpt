@@ -141,6 +141,8 @@ export default function DesignResultPage() {
           setConnectionMode('websocket');
           wsConnected = true;
           socket.emit('subscribe', { design_id: Number(designId) });
+          // 已完成的设计不会再推送事件，连接后主动拉取一次最新状态
+          fetchDesign();
         });
 
         socket.on('design.progress', (event) => {
@@ -218,7 +220,8 @@ export default function DesignResultPage() {
       setPollingManager(manager);
     };
 
-    // 初始化
+    // 初始化：立即拉取一次当前状态，再建立 WebSocket/轮询通道
+    fetchDesign();
     const cleanup = initManager();
 
     // 清理

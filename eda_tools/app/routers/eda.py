@@ -94,6 +94,67 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
         logger.info("Generating schematic with industrial-grade pipeline")
 
         if request.circuit_ir:
+            # Real KiCad-symbol schematic first, for every supported IR type
+            # (the generic builder maps free-form components onto library
+            # symbols). Falls back to the paged/generic renderers on failure.
+            try:
+                kicad_result = generate_kicad_artifacts(request.circuit_ir)
+            except Exception as e:
+                logger.warning(f"KiCad/SKiDL schematic generation failed, falling back: {e}")
+                kicad_result = None
+
+            if kicad_result and kicad_result.get("svg"):
+                draft_paged = None
+                try:
+                    paged = generate_ir_schematic_svg(request.circuit_ir)
+                    if isinstance(paged, dict):
+                        draft_paged = paged
+                except Exception:
+                    draft_paged = None
+
+                pages = None
+                if draft_paged:
+                    pages = {
+                        "pages": [
+                            {"subsystem": "full_schematic", "svg": kicad_result["svg"]}
+                        ] + (draft_paged.get("pages") or []),
+                        "summary": draft_paged.get("summary"),
+                        "component_to_subsystem": draft_paged.get("component_to_subsystem"),
+                        "layout": "kicad",
+                    }
+
+                summary = {
+                    "title": request.circuit_ir.get("title", "Circuit"),
+                    "components": len(request.circuit_ir.get("components", [])),
+                    "nets": len(request.circuit_ir.get("nets", [])),
+                    "algorithm": "SKiDL circuit capture + KiCad CLI SVG export",
+                    "generator": kicad_result.get("generator", "skidl+kicad-cli"),
+                    "erc": kicad_result.get("erc_summary"),
+                    "layout": kicad_result.get("layout"),
+                }
+                warnings = [
+                    "Full schematic uses standard KiCad symbols; review ERC output before layout."
+                ]
+                if draft_paged:
+                    warnings.append("Draft subsystem pages attached below the full schematic for layered review.")
+                return {
+                    "success": True,
+                    "message": "KiCad/SKiDL schematic generated",
+                    "svg": kicad_result["svg"],
+                    "schematic_svg": kicad_result["svg"],
+                    "schematic_pages": pages,
+                    "summary": summary,
+                    "generator": kicad_result.get("generator"),
+                    "kicad_schematic": kicad_result.get("kicad_schematic"),
+                    "skidl_netlist": kicad_result.get("skidl_netlist"),
+                    "erc_json": kicad_result.get("erc_json"),
+                    "erc_summary": kicad_result.get("erc_summary"),
+                    "toolchain": kicad_result.get("toolchain"),
+                    "kicad_paths": kicad_result.get("paths"),
+                    "layout": kicad_result.get("layout"),
+                    "warnings": warnings,
+                }
+
             if request.circuit_ir.get("circuit_type") == "generic_circuit" or request.circuit_ir.get("subsystems"):
                 svg_or_paged = generate_ir_schematic_svg(request.circuit_ir)
                 if svg_or_paged:
@@ -137,35 +198,6 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                             "Generic schematic is a conceptual connectivity draft; run engineering review before implementation."
                         ],
                     }
-
-            try:
-                kicad_result = generate_kicad_artifacts(request.circuit_ir)
-                if kicad_result.get("svg"):
-                    summary = {
-                        "title": request.circuit_ir.get("title", "Circuit"),
-                        "components": len(request.circuit_ir.get("components", [])),
-                        "nets": len(request.circuit_ir.get("nets", [])),
-                        "algorithm": "SKiDL circuit capture + KiCad CLI SVG export",
-                        "generator": kicad_result.get("generator", "skidl+kicad-cli"),
-                        "erc": kicad_result.get("erc_summary"),
-                        "layout": kicad_result.get("layout"),
-                    }
-                    return {
-                        "success": True,
-                        "message": "KiCad/SKiDL schematic generated",
-                        "svg": kicad_result["svg"],
-                        "summary": summary,
-                        "generator": kicad_result.get("generator"),
-                        "kicad_schematic": kicad_result.get("kicad_schematic"),
-                        "skidl_netlist": kicad_result.get("skidl_netlist"),
-                        "erc_json": kicad_result.get("erc_json"),
-                        "erc_summary": kicad_result.get("erc_summary"),
-                        "toolchain": kicad_result.get("toolchain"),
-                        "kicad_paths": kicad_result.get("paths"),
-                        "layout": kicad_result.get("layout"),
-                    }
-            except Exception as e:
-                logger.warning(f"KiCad/SKiDL schematic generation failed, falling back: {e}")
 
             svg = generate_ir_schematic_svg(request.circuit_ir)
             if svg:

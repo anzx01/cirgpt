@@ -34,17 +34,8 @@ def generate_kicad_artifacts(ir: Dict[str, Any]) -> Dict[str, Any]:
     if not ir.get("supported", False):
         raise KiCadArtifactError("Unsupported CircuitIR cannot be exported to KiCad")
 
-    if ir.get("circuit_type") not in {
-        "led_current_limiter",
-        "capacitor_discharge_led",
-        "rc_low_pass_filter",
-        "555_timer_blinker",
-        "opamp_inverting",
-        "opamp_non_inverting",
-    }:
-        # Unknown circuit_type: skip SKiDL/KiCad schematic but return a sentinel so
-        # the EDA router can fall back gracefully to the generic IR SVG renderer.
-        return {"success": False, "skipped": True}
+    # Any supported IR goes through: the classic families use their dedicated
+    # builders, everything else uses the generic free-form builder.
 
     python_exe = _find_python_with_skidl()
     kicad_root, kicad_cli = _find_kicad()
@@ -63,16 +54,20 @@ def generate_kicad_artifacts(ir: Dict[str, Any]) -> Dict[str, Any]:
     env.update(_kicad_env(kicad_root, kicad_cli))
     env["PYTHONUTF8"] = "1"
 
-    proc = subprocess.run(
-        [str(python_exe), str(script_path), str(input_path), str(output_path)],
-        cwd=str(work_dir),
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=120,
-    )
+    proc = None
+    for _attempt in range(2):  # SKiDL's auto-router is nondeterministic; retry once
+        proc = subprocess.run(
+            [str(python_exe), str(script_path), str(input_path), str(output_path)],
+            cwd=str(work_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if proc.returncode == 0 and output_path.exists():
+            break
 
     if proc.returncode != 0 or not output_path.exists():
         message = proc.stderr.strip() or proc.stdout.strip() or "KiCad/SKiDL generation failed"
@@ -283,8 +278,13 @@ def _generator_script() -> str:
                 output_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
                 return 0
             except Exception as exc:
+                import traceback
+                traceback.print_exc()
                 output_path.write_text(
-                    json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False),
+                    json.dumps(
+                        {"success": False, "error": str(exc), "traceback": traceback.format_exc()},
+                        ensure_ascii=False,
+                    ),
                     encoding="utf-8",
                 )
                 return 1
@@ -301,10 +301,8 @@ def _generator_script() -> str:
                 "opamp_inverting": build_opamp,
                 "opamp_non_inverting": build_opamp,
             }
-            if circuit_type not in builders:
-                raise ValueError(f"Unsupported CircuitIR type: {circuit_type}")
-
-            builders[circuit_type](ir)
+            builder = builders.get(circuit_type, build_generic)
+            builder(ir)
 
             safe_name = "".join(ch if ch.isalnum() else "_" for ch in circuit_type) or "circuit"
             top_name = f"{safe_name}_{os.getpid()}"
@@ -324,7 +322,20 @@ def _generator_script() -> str:
                 auto_stub=True,
                 auto_stub_fallback="labels",
             )
-            layout_name = apply_readable_kicad_layout(ir, sch_path, net_path)
+            # Label-grid layout: subsystem-ordered placement with per-pin stub
+            # wires + net labels, validated against KiCad's own netlist export.
+            # Falls back to SKiDL's native placement if validation fails; the
+            # old broken topology re-layout stays behind CIRGPT_CUSTOM_LAYOUT.
+            layout_name = "skidl-auto"
+            if os.environ.get("CIRGPT_CUSTOM_LAYOUT") == "1":
+                layout_name = apply_readable_kicad_layout(ir, sch_path, net_path)
+            else:
+                try:
+                    layout_name = layout_label_style(ir, sch_path, net_path)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    layout_name = "skidl-auto"
 
             kicad_cli = os.environ.get("KICAD_CLI") or "kicad-cli"
             svg_run = subprocess.run(
@@ -1204,6 +1215,145 @@ def _generator_script() -> str:
             return px, py + offset, 90, "left"
 
 
+        def layout_label_style(ir, sch_path: Path, net_path: Path):
+            """Subsystem-grid layout with per-pin stub wires and net labels.
+
+            Simpler and safer than layout_from_netlist: there are no shared
+            bus wires — every net attaches at its pin's own absolute position
+            via a short stub plus a label / power symbol, so the drawing
+            connects by construction. KiCad's netlist export must then match
+            SKiDL's source connectivity or the layout is discarded.
+            """
+            import math
+            import re as _re
+
+            original = sch_path.read_text(encoding="utf-8", errors="replace")
+            prefix, lib_symbols, blocks = split_kicad_schematic(original)
+            net_text = net_path.read_text(encoding="utf-8", errors="replace")
+            refs, pin_nets = parse_netlist_graph(net_text)
+            ref_blocks = {
+                block_ref(block): block
+                for block in blocks
+                if block.startswith("  (symbol") and block_ref(block)
+            }
+            refs = [ref for ref in refs if ref in ref_blocks and not ref.startswith("#")]
+            if not refs:
+                raise ValueError("no symbols for label-style layout")
+            lib_pins = parse_lib_symbol_pins(lib_symbols)
+
+            # Group refs by the IR's subsystem annotation; biggest symbols first.
+            sub_of = {}
+            for comp in ir.get("components", []):
+                ref = comp.get("ref")
+                if ref:
+                    sub_of[ref] = (comp.get("subsystem") or "main").strip() or "main"
+            groups = {}
+            for ref in refs:
+                groups.setdefault(sub_of.get(ref, "main"), []).append(ref)
+            for sub in groups:
+                groups[sub].sort(
+                    key=lambda r: -len(lib_pins.get(block_lib_id(ref_blocks[r]), {}))
+                )
+
+            def bbox(lib_id):
+                pts = [(dx, dy) for dx, dy, _r in lib_pins.get(lib_id, {}).values()]
+                if not pts:
+                    return 15.24, 10.16
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                return (
+                    max(max(xs) - min(xs), 10.16) + 15.24,
+                    max(max(ys) - min(ys), 7.62) + 12.7,
+                )
+
+            # Column grid that wraps at the page bottom.
+            TOP, BOTTOM, COL_GAP, ROW_GAP = 44.45, 252.0, 27.94, 12.7
+            positions = {}
+            col_x, col_w, y = 69.85, 0.0, TOP
+            max_x = col_x
+            for sub in groups:
+                for ref in groups[sub]:
+                    w, h = bbox(block_lib_id(ref_blocks[ref]))
+                    if y + h > BOTTOM and y > TOP:
+                        col_x += col_w + COL_GAP
+                        col_w = 0.0
+                        y = TOP
+                    positions[ref] = (
+                        round((col_x + w / 2.0) / 1.27) * 1.27,
+                        round((y + h / 2.0) / 1.27) * 1.27,
+                        0,
+                    )
+                    col_w = max(col_w, w)
+                    max_x = max(max_x, col_x + w)
+                    y += h + ROW_GAP
+
+            b = ["\n"]
+            for ref in refs:
+                x, yy, rot = positions[ref]
+                blk = place_ref(blocks, ref, x, yy, rot, prop_rot=0)
+                # place_ref only rewrites (at ...); a leftover (mirror x/y)
+                # from SKiDL's auto-placement would flip the symbol's pins
+                # away from the positions computed below, silently breaking
+                # every stub wire. The label-grid layout is mirror-free.
+                blk = _re.sub(r"\n\s*\(mirror [xy]\)", "", blk)
+                b.append(blk)
+
+            stub = 5.08
+            for ref in refs:
+                lib_id = block_lib_id(ref_blocks[ref])
+                x, yy, _rot = positions[ref]
+                for pin in sorted(lib_pins.get(lib_id, {})):
+                    dx, dy, prot = lib_pins[lib_id][pin]
+                    net = pin_nets.get((ref, pin))
+                    px, py, _vx, _vy = pin_position(x, yy, 0, dx, dy)
+                    if not net:
+                        b.append(no_connect(px, py))
+                        continue
+                    # pin (at x y rot): the anchor is the connection point and
+                    # rot points toward the symbol body, so the stub extends
+                    # in the OPPOSITE (outward) direction.
+                    rad = math.radians(prot + 180.0)
+                    ux, uy = math.cos(rad), -math.sin(rad)
+                    ex, ey = px + ux * stub, py + uy * stub
+                    b.append(wire([(px, py), (ex, ey)]))
+                    # All nets - rails included - attach via global labels:
+                    # label connectivity is verified by KiCad's own netlist
+                    # export, whereas power-symbol instances proved unreliable
+                    # in this hand-built sheet format.
+                    disp = display_net_name(net)
+                    if _is_gnd(net):
+                        disp = "GND"
+                    else:
+                        rail = _rail_symbol(net)
+                        if rail:
+                            disp = rail
+                    lx, ly, lrot, just = label_anchor(ex, ey, ux, uy)
+                    b.append(wire([(ex, ey), (lx, ly)]))
+                    b.append(label(disp, lx, ly, lrot, just, "bidirectional"))
+
+            # Grow the sheet when the grid runs past the default page.
+            paper = "A2" if max_x > 380 else ("A3" if max_x > 250 else "A4")
+            prefix = _re.sub(r'\(paper "[^"]*"\)', f'(paper "{paper}")', prefix)
+
+            body_text = "".join(b)
+            # symbol_block stamps instances with uid('sheet'); KiCad drops any
+            # symbol whose instance path does not match the file's root uuid,
+            # which silently disconnected every hand-emitted power symbol.
+            root_uuid_m = _re.search(r'\(uuid "([0-9a-f-]{36})"\)', original)
+            if root_uuid_m:
+                body_text = body_text.replace(
+                    f'"/{uid("sheet")}"', f'"/{root_uuid_m.group(1)}"'
+                )
+            sch_path.write_text(prefix + lib_symbols + body_text + ")\n", encoding="utf-8")
+            if validate_layout_net_equivalence(sch_path, net_text):
+                return "cirgpt-layout:label-grid"
+            sch_path.with_suffix(".label_debug.kicad_sch").write_text(
+                prefix + lib_symbols + body_text + ")\n", encoding="utf-8"
+            )
+            sch_path.write_text(original, encoding="utf-8")
+            raise ValueError("label-style layout failed netlist validation")
+
+
         def display_net_name(net_name):
             return "GND" if str(net_name) in {"0", "GND"} else str(net_name)
 
@@ -1600,6 +1750,270 @@ def _generator_script() -> str:
             gs[1] += gnd
             pf_v[1] += vcc
             pf_g[1] += gnd
+
+
+        # ---- generic free-form circuit builder -------------------------------
+        # Maps arbitrary DeepSeek-parsed components onto real KiCad library
+        # symbols and connects them using the IR's explicit nets[] table.
+
+        _GND_NAMES = {"0", "GND", "VSS", "DGND", "AGND", "GROUND"}
+
+        def _is_gnd(name):
+            return str(name).upper() in _GND_NAMES
+
+        def _rail_symbol(name):
+            """Power-library symbol name for a rail net, or None."""
+            n = str(name).upper().replace("-", "_")
+            if n in {"VCC", "VDD", "3V3", "3.3V"}:
+                return "+3V3" if "3" in n else "VCC"
+            if n in {"5V", "+5V", "VCC_5V", "VDD_5V", "VCC5V"}:
+                return "+5V"
+            if n in {"9V", "+9V", "VCC_9V"}:
+                return "+9V"
+            if n in {"12V", "+12V", "VIN_12V", "VCC_12V"}:
+                return "+12V"
+            if n in {"15V", "+15V", "VIN_15V"}:
+                return "+15V"
+            if n in {"24V", "+24V", "VIN_24V"}:
+                return "+24V"
+            return None
+
+        def _symbol_for(comp):
+            """Map a free-form IR component onto a (lib, symbol) pair."""
+            t = (comp.get("type") or "").lower()
+            v = str(comp.get("value") or "")
+            vu = v.upper()
+            if "screw" in v.lower():
+                n = len(comp.get("nodes") or [])
+                if 2 <= n <= 8:
+                    return ("Connector", f"Screw_Terminal_01x{n:02d}")
+            if t == "resistor":
+                return ("Device", "R")
+            if t in {"capacitor", "cap"}:
+                return ("Device", "C")
+            if t == "inductor":
+                return ("Device", "L")
+            if t == "led":
+                return ("Device", "LED")
+            if t == "tvs_diode":
+                return ("Device", "D_TVS")
+            if t == "zener_diode":
+                return ("Device", "D_Zener")
+            if t == "diode":
+                if any(k in vu for k in ("SS", "1N58", "SK", "BAT", "MBR")):
+                    return ("Device", "D_Schottky")
+                return ("Device", "D")
+            if t == "crystal":
+                return ("Device", "Crystal")
+            if t == "fuse":
+                return ("Device", "Fuse")
+            if t in {"switch", "button"}:
+                return ("Switch", "SW_SPST")
+            if t in {"mosfet", "transistor_mosfet", "fet", "power_mosfet"}:
+                if "PMOS" in (t + vu) or "-P" in vu:
+                    return ("Device", "Q_PMOS")
+                return ("Device", "Q_NMOS")
+            if t in {"bjt", "transistor", "transistor_npn"}:
+                if "PNP" in vu:
+                    return ("Device", "Q_PNP")
+                return ("Device", "Q_NPN")
+            if t == "linear_regulator":
+                return ("Regulator_Linear", "L7805")
+            if t == "timer_ic":
+                return ("Timer", "LM555xN")
+            if t == "opamp":
+                return ("Amplifier_Operational", "LM358")
+            if t == "microcontroller":
+                return ("MCU_Microchip_ATmega", "ATmega328P-P")
+            if t == "test_point":
+                return ("Connector", "TestPoint")
+            if t == "connector":
+                n = len(comp.get("nodes") or [])
+                if 2 <= n <= 8:
+                    return ("Connector_Generic", f"Conn_01x{n:02d}")
+            n = len(comp.get("nodes") or [])
+            if 2 <= n <= 8:
+                return ("Connector_Generic", f"Conn_01x{n:02d}")
+            return None
+
+        def _fmt_value(comp):
+            t = (comp.get("type") or "").lower()
+            try:
+                val = float(comp.get("value"))
+            except (TypeError, ValueError):
+                return str(comp.get("value") or "")
+            if t == "resistor":
+                return fmt_res(val)
+            if t == "capacitor":
+                return fmt_cap(val)
+            if t == "inductor":
+                return f"{val:g}H" if abs(val) >= 1 else f"{val*1000:g}mH"
+            return str(comp.get("value") or "")
+
+        # LM555xN is a dual-timer package; use unit A (pins 1-6) + shared 7/14
+        _TIMER_PINS = {
+            "DISCH": 1, "THRES": 2, "THRESH": 2, "CTRL": 3, "CONT": 3,
+            "RESET": 4, "RST": 4, "OUT": 5, "TRIG": 6,
+            "GND": 7, "VCC": 14,
+        }
+        # ATmega328P-P is DIP-28 (extends ATmega48PV-10P)
+        _MCU_PINS = {
+            "reset": [1], "rst": [1],
+            "vcc": [7, 20], "avcc": [20], "aref": [21],
+            "gnd": [8, 22], "xtal1": [9], "xtal2": [10],
+        }
+        _MCU_ADC_PINS = [23, 24, 25, 26, 27, 28]
+        _MCU_DIO_PINS = [15, 16, 17, 18, 19, 14, 11, 12, 13, 2, 3, 4, 5, 6]
+
+        def _connect_part(part, comp, get_net):
+            """Wire one component using type-aware pin semantics."""
+            t = (comp.get("type") or "").lower()
+            nodes = [str(n) for n in (comp.get("nodes") or [])]
+
+            if t in {"diode", "led", "zener_diode"}:
+                # IR convention: node[0]=anode, node[1]=cathode.
+                # KiCad Device:D/LED: pin 1 = K(cathode), pin 2 = A(anode).
+                if len(nodes) >= 2:
+                    part[2] += get_net(nodes[0])
+                    part[1] += get_net(nodes[1])
+                return
+            if t == "tvs_diode":  # bidirectional: A1=1, A2=2
+                for i, nname in enumerate(nodes[:2]):
+                    part[i + 1] += get_net(nname)
+                return
+            if t in {"mosfet", "transistor_mosfet", "fet", "power_mosfet"}:
+                # KiCad Q_NMOS/Q_PMOS pins are keyed by letters G/S/D.
+                g = next((n for n in nodes if "GATE" in n.upper() or "DRV" in n.upper() or "PWM" in n.upper()), None)
+                s = next((n for n in nodes if _is_gnd(n)), None)
+                rest = [n for n in nodes if n != g and n != s]
+                d = rest[0] if rest else None
+                if g is None or s is None or d is None:
+                    g, s, d = (nodes + [None, None, None])[:3]
+                if g:
+                    part["G"] += get_net(g)
+                if s:
+                    part["S"] += get_net(s)
+                if d:
+                    part["D"] += get_net(d)
+                return
+            if t in {"bjt", "transistor", "transistor_npn"}:
+                b = next((n for n in nodes if "BASE" in n.upper() or "GATE" in n.upper() or "DRV" in n.upper()), None)
+                e = next((n for n in nodes if _is_gnd(n)), None)
+                rest = [n for n in nodes if n != b and n != e]
+                c = rest[0] if rest else None
+                if b is None or e is None or c is None:
+                    b, e, c = (nodes + [None, None, None])[:3]
+                if b:
+                    part["B"] += get_net(b)
+                if e:
+                    part["E"] += get_net(e)
+                if c:
+                    part["C"] += get_net(c)
+                return
+            if t == "timer_ic":
+                for nname in nodes:
+                    u = str(nname).upper()
+                    if _is_gnd(nname):
+                        u = "GND"
+                    elif _rail_symbol(nname) or u in {"VCC", "VDD"}:
+                        u = "VCC"
+                    pin = _TIMER_PINS.get(u)
+                    if pin is None:
+                        pin = _TIMER_PINS.get(str(nname).upper())
+                    if pin is not None:
+                        part[pin] += get_net(nname)
+                return
+            if t == "microcontroller":
+                adc = list(_MCU_ADC_PINS)
+                dio = list(_MCU_DIO_PINS)
+                for nname in nodes:
+                    u = nname.upper()
+                    key = nname.lower()
+                    if _is_gnd(nname):
+                        pins = _MCU_PINS["gnd"]
+                    elif _rail_symbol(nname) or key in {"vcc", "vdd", "avcc"} or u.startswith(("VCC", "VDD", "+")):
+                        pins = _MCU_PINS["vcc"]
+                    elif key in _MCU_PINS:
+                        pins = _MCU_PINS[key]
+                    elif any(k in u for k in ("ANALOG", "ADC", "SEN", "MOIST", "AIO")):
+                        pins = [adc.pop(0)] if adc else ([dio.pop(0)] if dio else [])
+                    else:
+                        pins = [dio.pop(0)] if dio else []
+                    for p in pins:
+                        part[p] += get_net(nname)
+                return
+            # Default: positional by pin number 1..N
+            # (R, C, L, crystal, fuse, connectors, regulator, switch, test point)
+            for i, nname in enumerate(nodes):
+                try:
+                    part[i + 1] += get_net(nname)
+                except Exception:
+                    break  # more IR nodes than symbol pins
+
+        def build_generic(ir):
+            comps = ir.get("components", [])
+            if not comps:
+                raise ValueError("CircuitIR has no components")
+
+            # Create every net once; mark power/gnd nets so ERC stays quiet.
+            nets = {}
+
+            def get_net(name):
+                if name not in nets:
+                    is_pwr = _is_gnd(name) or _rail_symbol(name) is not None
+                    nets[name] = net(name, is_pwr)
+                return nets[name]
+
+            parts = []
+            skipped = []
+            for comp in comps:
+                lib_sym = _symbol_for(comp)
+                if lib_sym is None:
+                    skipped.append(comp.get("ref") or comp.get("type"))
+                    continue
+                lib, sym = lib_sym
+                ref = comp.get("ref") or f"U{len(parts)+1}"
+                part = Part(lib, sym, ref=ref, value=_fmt_value(comp) or ref)
+                parts.append((part, comp))
+
+            for part, comp in parts:
+                t = (comp.get("type") or "").lower()
+                if t in {"dc_voltage_source", "dc_source", "voltage_source", "battery"}:
+                    continue
+                _connect_part(part, comp, get_net)
+
+            # Power symbols + PWR_FLAG on ground and the first voltage rail.
+            pwr_i = 0
+            gnd_flagged = False
+            for name in nets:
+                if _is_gnd(name):
+                    pwr_i += 1
+                    gs = power_symbol("GND", f"#PWR{pwr_i:02d}")
+                    gs[1] += nets[name]
+                    if not gnd_flagged:
+                        gnd_flagged = True
+                        pwr_i += 1
+                        pf = pwr_flag(f"#FLG{pwr_i:02d}")
+                        pf[1] += nets[name]
+                else:
+                    rail = _rail_symbol(name)
+                    if rail:
+                        pwr_i += 1
+                        ps = power_symbol(rail, f"#PWR{pwr_i:02d}")
+                        ps[1] += nets[name]
+
+            # Exactly one PWR_FLAG per distinct non-ground rail net keeps ERC
+            # from complaining about undriven power inputs.
+            flagged = set()
+            for part, comp in parts:
+                t = (comp.get("type") or "").lower()
+                if t in {"dc_voltage_source", "dc_source", "voltage_source", "battery"}:
+                    for nname in comp.get("nodes") or []:
+                        if not _is_gnd(nname) and nname not in flagged:
+                            flagged.add(nname)
+                            pwr_i += 1
+                            pf = pwr_flag(f"#FLG{pwr_i:02d}")
+                            pf[1] += get_net(nname)
 
 
         def build_led(ir):
