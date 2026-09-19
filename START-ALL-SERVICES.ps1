@@ -29,8 +29,8 @@ $edaCmd = "Set-Location '$edaPath'; python -m uvicorn app.main:app --reload --ho
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $edaCmd -WindowStyle Normal
 Start-Sleep -Seconds 3
 
-# Service 4: Frontend (Port 3000)
-Write-Host "[4/4] Starting Frontend (port 3000)..." -ForegroundColor Yellow
+# Service 4: Frontend (Port 3100)
+Write-Host "[4/4] Starting Frontend (port 3100)..." -ForegroundColor Yellow
 $frontendPath = Join-Path $scriptDir "frontend"
 $frontendCmd = "Set-Location '$frontendPath'; npm run dev"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendCmd -WindowStyle Normal
@@ -42,7 +42,7 @@ Write-Host "All Services Started!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Service URLs:" -ForegroundColor White
-Write-Host "  Frontend:  http://localhost:3000" -ForegroundColor Cyan
+Write-Host "  Frontend:  http://localhost:3100" -ForegroundColor Cyan
 Write-Host "  Backend:   http://localhost:8000" -ForegroundColor Cyan
 Write-Host "  AI Service: http://localhost:8001" -ForegroundColor Cyan
 Write-Host "  EDA Service: http://localhost:8002" -ForegroundColor Cyan
@@ -51,7 +51,7 @@ Write-Host "API Documentation: http://localhost:8000/docs" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Opening browser..." -ForegroundColor Yellow
 Start-Sleep -Seconds 2
-Start-Process "http://localhost:3000"
+Start-Process "http://localhost:3100"
 
 Write-Host ""
 Write-Host "All services are running in separate windows." -ForegroundColor Gray

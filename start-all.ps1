@@ -69,7 +69,7 @@ Write-Host "✅ Celery Worker started (PID: $($celeryProcess.Id))" -ForegroundCo
 
 # Start Frontend
 Write-Host ""
-Write-Host "📋 [7/7] Starting Frontend (port 3000)..." -ForegroundColor Yellow
+Write-Host "📋 [7/7] Starting Frontend (port 3100)..." -ForegroundColor Yellow
 Set-Location frontend
 if (Test-Path "node_modules") {
     Write-Host "✅ Frontend dependencies already installed" -ForegroundColor Green
@@ -88,7 +88,7 @@ Write-Host "  ✅ All Services Started Successfully!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "🌐 Access the application:" -ForegroundColor Yellow
-Write-Host "   Frontend:        http://localhost:3000" -ForegroundColor White
+Write-Host "   Frontend:        http://localhost:3100" -ForegroundColor White
 Write-Host "   Backend API:     http://localhost:8000/docs" -ForegroundColor White
 Write-Host "   AI Service:      http://localhost:8001/docs" -ForegroundColor White
 Write-Host "   EDA Service:     http://localhost:8002/docs" -ForegroundColor White

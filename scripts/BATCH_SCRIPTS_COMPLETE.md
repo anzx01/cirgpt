@@ -26,7 +26,7 @@
 ### 📦 单独服务脚本
 
 5. **start-frontend.bat**
-   - 仅启动前端 (http://localhost:3000)
+   - 仅启动前端 (http://localhost:3100)
 
 6. **stop-frontend.bat**
    - 仅停止前端
@@ -64,7 +64,7 @@
 3️⃣ 启动服务
    选择 [1] 启动全部服务
    等待5-10秒
-   浏览器打开 http://localhost:3000
+   浏览器打开 http://localhost:3100
 ```
 
 ### 日常使用
@@ -180,7 +180,7 @@ g:\aiprj\cirgpt\
 ↓
 检查状态
   ✓ 后端: http://localhost:8000
-  ✓ 前端: http://localhost:3000
+  ✓ 前端: http://localhost:3100
 ↓
 显示访问地址
 完成！
@@ -282,7 +282,7 @@ g:\aiprj\cirgpt\
 1. ✅ 双击 `create-shortcut.bat` 创建桌面快捷方式
 2. ✅ 双击桌面图标打开控制面板
 3. ✅ 选择 [1] 启动全部服务
-4. ✅ 浏览器访问 http://localhost:3000
+4. ✅ 浏览器访问 http://localhost:3100
 5. ✅ 开始使用 CircuitGPT！
 
 ---

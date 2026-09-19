@@ -41,9 +41,9 @@ try {
 }
 
 try {
-    $frontend = Invoke-WebRequest -Uri "http://localhost:3000/" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
+    $frontend = Invoke-WebRequest -Uri "http://localhost:3100/" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
     if ($frontend) {
-        Write-Host "[OK] Frontend running: http://localhost:3000" -ForegroundColor Green
+        Write-Host "[OK] Frontend running: http://localhost:3100" -ForegroundColor Green
     }
 } catch {
     Write-Host "[X] Frontend not responding (may still be starting)" -ForegroundColor Yellow
@@ -55,7 +55,7 @@ Write-Host "Startup Complete" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Access URLs:" -ForegroundColor White
-Write-Host "  Frontend: http://localhost:3000" -ForegroundColor White
+Write-Host "  Frontend: http://localhost:3100" -ForegroundColor White
 Write-Host "  Backend: http://localhost:8000" -ForegroundColor White
 Write-Host "  API Docs: http://localhost:8000/docs" -ForegroundColor White
 Write-Host ""

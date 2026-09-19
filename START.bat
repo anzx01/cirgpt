@@ -2,6 +2,11 @@
 REM AI Circuit Designer - Quick Start (Windows Batch File)
 REM Double-click this file to start all services
 
+REM EDA toolchain paths (KiCad + ngspice). Set here so services find the
+REM tools no matter how fresh the launching shell's environment is.
+set "KICAD_ROOT=D:\Program Files\KiCad\10.0"
+set "PATH=%PATH%;D:\Program Files\KiCad\10.0\bin;%~dp0Spice64\bin"
+
 echo ========================================
 echo   AI Circuit Designer - Quick Start
 echo ========================================
@@ -58,7 +63,7 @@ start "Celery Worker" cmd /k "cd backend && call venv\Scripts\activate.bat && py
 timeout /t 2 /nobreak >nul
 
 echo.
-echo [6/7] Starting Frontend (port 3000)...
+echo [6/7] Starting Frontend (port 3100)...
 start "Frontend" cmd /k "cd frontend && npm run dev"
 
 echo.
@@ -67,7 +72,7 @@ echo   All Services Started!
 echo ========================================
 echo.
 echo Access the application:
-echo   Frontend:        http://localhost:3000
+echo   Frontend:        http://localhost:3100
 echo   Backend API:     http://localhost:8000/docs
 echo   AI Service:      http://localhost:8001/docs
 echo   EDA Service:     http://localhost:8002/docs

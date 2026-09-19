@@ -13,7 +13,9 @@ from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_NGSPICE_CANDIDATES = ["ngspice", "ngspice-64", "ngspice64"]
+# ngspice_con first: the windowed ngspice.exe shipped in official Windows
+# builds hangs on "--version" (no console), so probing it always times out.
+_NGSPICE_CANDIDATES = ["ngspice_con", "ngspice", "ngspice-64", "ngspice64"]
 
 
 def _find_ngspice() -> Optional[str]:

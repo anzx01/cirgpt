@@ -3,7 +3,8 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 
 # EDA Tools
-skidl==2.2.1
+# skidl 2.2.1's KiCad 9 schematic generator is a no-op stub; 2.2.3 implements it
+skidl==2.2.3
 
 # KiCad integration (requires KiCad to be installed)
 # Python bindings for KiCad - NOT installed via pip

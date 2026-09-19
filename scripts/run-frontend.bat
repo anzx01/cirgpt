@@ -25,7 +25,7 @@ if not exist ".env.local" (
 
 echo.
 echo 启动开发服务器...
-echo 访问地址: http://localhost:3000
+echo 访问地址: http://localhost:3100
 echo.
 echo 按 Ctrl+C 停止服务
 echo.

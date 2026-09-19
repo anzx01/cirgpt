@@ -58,7 +58,7 @@ class HealthService:
             return {"status": "error", "message": f"Storage check failed: {str(e)}"}
 
     async def _check_ngspice(self) -> Dict[str, Any]:
-        for executable in ["ngspice", "ngspice-64", "ngspice64"]:
+        for executable in ["ngspice_con", "ngspice", "ngspice-64", "ngspice64"]:
             if shutil.which(executable):
                 return {"status": "ok", "message": f"Found {executable}"}
         return {

@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     EDA_SERVICE_URL: str = "http://eda-service:8002"
 
     # CORS配置 - 使用默认值，避免解析问题
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
+    CORS_ORIGINS: str = "http://localhost:3100,http://localhost:8000"
 
     @field_validator("SECRET_KEY", mode="after")
     @classmethod

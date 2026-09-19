@@ -97,7 +97,7 @@ goto MENU
 :BROWSER
 echo.
 echo 正在打开浏览器...
-start http://localhost:3000
+start http://localhost:3100
 timeout /t 2 /nobreak >nul
 goto MENU
 

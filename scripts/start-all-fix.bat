@@ -38,9 +38,9 @@ if %errorlevel% equ 0 (
 )
 
 REM Check frontend
-curl -s http://localhost:3000/ >/dev/null 2>&1
+curl -s http://localhost:3100/ >/dev/null 2>&1
 if %errorlevel% equ 0 (
-    echo [OK] Frontend running: http://localhost:3000
+    echo [OK] Frontend running: http://localhost:3100
 ) else (
     echo [X] Frontend not responding (may still be starting)
 )
@@ -51,7 +51,7 @@ echo Startup Complete
 echo ========================================
 echo.
 echo Access URLs:
-echo   Frontend: http://localhost:3000
+echo   Frontend: http://localhost:3100
 echo   Backend: http://localhost:8000
 echo   API Docs: http://localhost:8000/docs
 echo.

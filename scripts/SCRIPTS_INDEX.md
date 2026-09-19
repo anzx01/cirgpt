@@ -66,7 +66,7 @@
 
 ### 第3步: 访问应用
 
-浏览器打开：http://localhost:3000
+浏览器打开：http://localhost:3100
 
 ---
 
@@ -244,7 +244,7 @@ start "Title" /MIN /B command
 **自动打开浏览器**:
 ```batch
 REM 在 start-all.bat 末尾添加
-start http://localhost:3000
+start http://localhost:3100
 ```
 
 ---

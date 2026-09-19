@@ -78,7 +78,7 @@ foreach ($path in $requiredPaths) {
 Start-ServiceProcess -Name "Backend API" -Path $backendPath -Command ".\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000" -Port 8000
 Start-ServiceProcess -Name "AI Service" -Path $aiPath -Command ".\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001" -Port 8001
 Start-ServiceProcess -Name "EDA Service" -Path $edaPath -Command ".\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8002" -Port 8002
-Start-ServiceProcess -Name "Frontend" -Path $frontendPath -Command "npm run dev" -Port 3000
+Start-ServiceProcess -Name "Frontend" -Path $frontendPath -Command "npm run dev" -Port 3100
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -86,7 +86,7 @@ Write-Host "Services Started" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Access URLs:" -ForegroundColor White
-Write-Host "  Frontend:    http://localhost:3000" -ForegroundColor Cyan
+Write-Host "  Frontend:    http://localhost:3100" -ForegroundColor Cyan
 Write-Host "  Backend API: http://localhost:8000/docs" -ForegroundColor Cyan
 Write-Host "  AI Service:  http://localhost:8001/docs" -ForegroundColor Cyan
 Write-Host "  EDA Service: http://localhost:8002/docs" -ForegroundColor Cyan

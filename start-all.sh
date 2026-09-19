@@ -76,7 +76,7 @@ echo $celery_pid > "pids/celery-worker.pid"
 
 # Start Frontend
 echo ""
-echo "📋 [7/7] Starting Frontend (port 3000)..."
+echo "📋 [7/7] Starting Frontend (port 3100)..."
 cd frontend
 if [ -d "node_modules" ]; then
     echo "✅ Frontend dependencies already installed"
@@ -97,7 +97,7 @@ echo "  ✅ All Services Started Successfully!"
 echo "========================================"
 echo ""
 echo "🌐 Access the application:"
-echo "   Frontend:        http://localhost:3000"
+echo "   Frontend:        http://localhost:3100"
 echo "   Backend API:     http://localhost:8000/docs"
 echo "   AI Service:      http://localhost:8001/docs"
 echo "   EDA Service:     http://localhost:8002/docs"

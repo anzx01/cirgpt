@@ -39,9 +39,9 @@ if %errorlevel% equ 0 (
 )
 
 REM 检查前端
-curl -s http://localhost:3000/ >nul 2>&1
+curl -s http://localhost:3100/ >nul 2>&1
 if %errorlevel% equ 0 (
-    echo [✓] 前端服务运行中: http://localhost:3000
+    echo [✓] 前端服务运行中: http://localhost:3100
 ) else (
     echo [✗] 前端服务未响应（可能还在启动中）
 )
@@ -52,7 +52,7 @@ echo 启动完成
 echo ========================================
 echo.
 echo 访问地址:
-echo   前端: http://localhost:3000
+echo   前端: http://localhost:3100
 echo   后端: http://localhost:8000
 echo   API文档: http://localhost:8000/docs
 echo.

@@ -19,7 +19,7 @@ if exist ".pids\frontend.pid" (
     if "%ERRORLEVEL%"=="0" (
         echo   状态: [运行中]
         echo   进程ID: %FRONTEND_PID%
-        echo   地址: http://localhost:3000
+        echo   地址: http://localhost:3100
     ) else (
         echo   状态: [已停止]
     )
@@ -53,7 +53,7 @@ echo ========================================
 echo.
 
 REM 检查端口占用
-netstat -ano | findstr ":3000" >nul 2>&1
+netstat -ano | findstr ":3100" >nul 2>&1
 if %errorlevel% equ 0 (
     echo [✓] 端口 3000 (前端) 正在使用
 ) else (

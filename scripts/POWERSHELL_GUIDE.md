@@ -103,7 +103,7 @@ Start-Sleep -Seconds 10
 .\status.ps1
 
 # 4. 打开浏览器
-Start-Process "http://localhost:3000"
+Start-Process "http://localhost:3100"
 ```
 
 ---
@@ -170,7 +170,7 @@ Test-Path G:\aiprj\cirgpt\backend\.env
    cd backend && python -m uvicorn app.main:app --reload
    ```
 
-访问：**http://localhost:3000**
+访问：**http://localhost:3100**
 
 ---
 

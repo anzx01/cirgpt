@@ -19,7 +19,7 @@ if ($nodeProcesses) {
     $nodeProcesses | ForEach-Object {
         Write-Host "  Process ID: $($_.Id)" -ForegroundColor Gray
     }
-    Write-Host "  URL: http://localhost:3000" -ForegroundColor Cyan
+    Write-Host "  URL: http://localhost:3100" -ForegroundColor Cyan
 } else {
     Write-Host "  Status: " -NoNewline -ForegroundColor White
     Write-Host "[Stopped]" -ForegroundColor Red
@@ -54,11 +54,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # 检查端口
-$port3000 = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
+$port3000 = Get-NetTCPConnection -LocalPort 3100 -ErrorAction SilentlyContinue
 if ($port3000) {
-    Write-Host "[OK] Port 3000 (Frontend) is in use" -ForegroundColor Green
+    Write-Host "[OK] Port 3100 (Frontend) is in use" -ForegroundColor Green
 } else {
-    Write-Host "[X] Port 3000 (Frontend) is free" -ForegroundColor Gray
+    Write-Host "[X] Port 3100 (Frontend) is free" -ForegroundColor Gray
 }
 
 $port8000 = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue

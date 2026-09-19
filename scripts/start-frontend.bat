@@ -40,7 +40,7 @@ if not exist "..\scripts\.pids" mkdir "..\scripts\.pids"
 echo.
 echo [启动] 正在启动开发服务器...
 echo.
-echo 访问地址: http://localhost:3000
+echo 访问地址: http://localhost:3100
 echo.
 echo 提示: 按 Ctrl+C 停止服务
 echo       或运行 stop-frontend.bat

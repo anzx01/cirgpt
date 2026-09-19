@@ -15,7 +15,7 @@
 
 | 文件 | 功能 |
 |------|------|
-| **start-frontend.bat** | 启动前端服务 (http://localhost:3000) |
+| **start-frontend.bat** | 启动前端服务 (http://localhost:3100) |
 | **stop-frontend.bat** | 停止前端服务 |
 
 ### 后端脚本
@@ -58,7 +58,7 @@
 1. **启动全部服务**
    - 双击 `start-all.bat`
    - 等待5-10秒
-   - 浏览器访问 http://localhost:3000
+   - 浏览器访问 http://localhost:3100
 
 2. **只启动前端**
    - 双击 `start-frontend.bat`
@@ -112,7 +112,7 @@
 [前端服务]
   状态: [运行中]
   进程ID: 12345
-  地址: http://localhost:3000
+  地址: http://localhost:3100
 
 [后端服务]
   状态: [运行中]
@@ -156,7 +156,7 @@
 
 ### 问题1: 启动失败 - 端口被占用
 
-**错误信息**: `Port 3000/8000 is already in use`
+**错误信息**: `Port 3100/8000 is already in use`
 
 **解决方法**:
 ```
@@ -228,7 +228,7 @@ scripts/
    ```
    双击 menu.bat → [1] 启动全部服务
    等待启动完成
-   浏览器访问 http://localhost:3000
+   浏览器访问 http://localhost:3100
    ```
 
 2. **开发过程**
@@ -286,7 +286,7 @@ PORT=3001
 
 在 `start-all.bat` 末尾添加:
 ```batch
-start http://localhost:3000
+start http://localhost:3100
 ```
 
 ---

@@ -55,7 +55,7 @@ echo ""
 
 # 询问用户要启动什么
 echo "请选择要启动的服务:"
-echo "  1) 前端 (http://localhost:3000)"
+echo "  1) 前端 (http://localhost:3100)"
 echo "  2) 后端 (http://localhost:8000)"
 echo "  3) 两者都启动"
 echo "  4) 查看详细安装报告"
