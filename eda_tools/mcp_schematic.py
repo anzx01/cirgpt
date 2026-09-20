@@ -52,7 +52,15 @@ def _find_kicad() -> Tuple[Path, Path]:
     if which:
         cli = Path(which)
         return cli.resolve().parents[1], cli
-    raise McpSchematicError("KiCad CLI not found. Set KICAD_ROOT or KICAD_CLI.")
+    # Install location differs per machine (which drive, which version dir);
+    # probe the common spots on every drive, newest version wins.
+    from kicad_artifacts import scan_kicad_roots
+
+    for root in scan_kicad_roots():
+        return root, root / "bin" / "kicad-cli.exe"
+    raise McpSchematicError(
+        "KiCad CLI not found. Install KiCad or set KICAD_ROOT or KICAD_CLI."
+    )
 
 
 def _server_env(kicad_root: Path, kicad_cli: Path) -> Dict[str, str]:

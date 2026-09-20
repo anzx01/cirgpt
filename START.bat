@@ -4,8 +4,27 @@ REM Double-click this file to start all services
 
 REM EDA toolchain paths (KiCad + ngspice). Set here so services find the
 REM tools no matter how fresh the launching shell's environment is.
-set "KICAD_ROOT=D:\Program Files\KiCad\10.0"
-set "PATH=%PATH%;D:\Program Files\KiCad\10.0\bin;%~dp0Spice64\bin"
+REM KiCad's install location differs between machines (which drive letter),
+REM so auto-detect it: honor an already-set KICAD_ROOT, else probe the usual
+REM spots on every drive, newest version first. The eda_tools service has
+REM its own fallback scan, so leaving KICAD_ROOT empty here is still fine.
+set "KICAD_DETECT="
+if defined KICAD_ROOT if exist "%KICAD_ROOT%\bin\kicad-cli.exe" set "KICAD_DETECT=1"
+if not defined KICAD_DETECT for %%L in (C D E F G H I J K) do (
+    if not defined KICAD_DETECT for %%V in (10.0 9.0 8.0 7.0 6.0) do (
+        if exist "%%L:\Program Files\KiCad\%%V\bin\kicad-cli.exe" (
+            set "KICAD_ROOT=%%L:\Program Files\KiCad\%%V"
+            set "KICAD_DETECT=1"
+        )
+    )
+)
+if defined KICAD_DETECT (
+    echo [0/7] Using KiCad at %KICAD_ROOT%
+) else (
+    echo [0/7] WARNING: KiCad not found on any drive; set KICAD_ROOT manually.
+)
+if defined KICAD_ROOT set "PATH=%PATH%;%KICAD_ROOT%\bin"
+set "PATH=%PATH%;%~dp0Spice64\bin"
 
 echo ========================================
 echo   AI Circuit Designer - Quick Start

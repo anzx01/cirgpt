@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-DEFAULT_KICAD_ROOT = Path(r"G:\Program Files\KiCad\10.0")
+# Preferred system-wide Python that has SKiDL installed; any python works,
+# including this venv's own interpreter (see _candidate_python_with_skidl).
 DEFAULT_SYSTEM_PYTHON = Path(r"C:\Python313\python.exe")
 
 
@@ -193,6 +194,36 @@ def _candidate_python_with_skidl() -> Optional[Path]:
     return None
 
 
+def scan_kicad_roots() -> List[Path]:
+    """KiCad install roots found in common locations on every drive, newest first.
+
+    Machines differ in where KiCad lives (office: G:\Program Files\KiCad, home:
+    D:\Program Files\KiCad), so instead of a hardcoded drive we probe the usual
+    spots on every available drive letter and rank hits by version number.
+    """
+    bases = [Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "KiCad"]
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        drive = Path(f"{letter}:\\")
+        if drive.is_dir():
+            bases.append(drive / "Program Files" / "KiCad")
+            bases.append(drive / "KiCad")
+    ranked: List[Tuple[Tuple[int, ...], Path]] = []
+    for base in dict.fromkeys(bases):
+        try:
+            children = list(base.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if (child / "bin" / "kicad-cli.exe").is_file():
+                parts = child.name.replace("-", ".").split(".")
+                try:
+                    version = tuple(int(p) for p in parts if p.isdigit())
+                except ValueError:
+                    version = (0,)
+                ranked.append((version, child))
+    return [root for _version, root in sorted(ranked, reverse=True)]
+
+
 def _find_kicad() -> Tuple[Path, Path]:
     env_cli = os.environ.get("KICAD_CLI")
     if env_cli:
@@ -201,19 +232,21 @@ def _find_kicad() -> Tuple[Path, Path]:
             return _root_from_cli(cli), cli
 
     env_root = os.environ.get("KICAD_ROOT")
-    roots = [Path(env_root)] if env_root else []
-    roots.append(DEFAULT_KICAD_ROOT)
-    for root in roots:
-        cli = root / "bin" / "kicad-cli.exe"
-        if cli.exists():
-            return root, cli
+    if env_root and (Path(env_root) / "bin" / "kicad-cli.exe").is_file():
+        root = Path(env_root)
+        return root, root / "bin" / "kicad-cli.exe"
 
     which = shutil.which("kicad-cli")
     if which:
         cli = Path(which)
         return _root_from_cli(cli), cli
 
-    raise KiCadArtifactError("KiCad CLI not found. Set KICAD_ROOT or KICAD_CLI.")
+    for root in scan_kicad_roots():
+        return root, root / "bin" / "kicad-cli.exe"
+
+    raise KiCadArtifactError(
+        "KiCad CLI not found. Install KiCad or set KICAD_ROOT / KICAD_CLI."
+    )
 
 
 def _root_from_cli(cli: Path) -> Path:
