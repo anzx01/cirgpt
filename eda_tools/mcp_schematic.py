@@ -1325,8 +1325,28 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                         continue
 
                     rail = "GND" if _is_gnd(net_name) else _rail_symbol(net_name)
+
+                    def stub_end(ref: str, pos: Tuple[float, float]) -> Tuple[float, float]:
+                        """Pin position shifted one grid outward from the symbol.
+
+                        Labels / power symbols sitting exactly on the pin
+                        render their text over the pin-number column; a short
+                        stub wire keeps connectivity while moving the text off
+                        the symbol body.
+                        """
+                        cx, cy = positions.get(ref, pos)
+                        dx, dy = pos[0] - cx, pos[1] - cy
+                        if abs(dx) >= abs(dy):
+                            return (pos[0] + (2.54 if dx >= 0 else -2.54), pos[1])
+                        return (pos[0], pos[1] + (2.54 if dy >= 0 else -2.54))
+
                     if rail:
                         for ref, pin, pos in members:
+                            ex, ey = stub_end(ref, pos)
+                            await mcp.call(
+                                "add_wire",
+                                {"start_pos": [pos[0], pos[1]], "end_pos": [ex, ey]},
+                            )
                             pwr_i += 1
                             await mcp.call(
                                 "add_component",
@@ -1334,7 +1354,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                     "lib_id": f"power:{rail}",
                                     "reference": f"#PWR{pwr_i:02d}",
                                     "value": rail,
-                                    "position": [pos[0], pos[1]],
+                                    "position": [ex, ey],
                                     "footprint": "",
                                 },
                             )
@@ -1342,6 +1362,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                         # (ground included) keeps ERC quiet about undriven
                         # power inputs.
                         ref, pin, pos = members[0]
+                        ex, ey = stub_end(ref, pos)
                         pwr_i += 1
                         await mcp.call(
                             "add_component",
@@ -1349,16 +1370,21 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                 "lib_id": "power:PWR_FLAG",
                                 "reference": f"#FLG{pwr_i:02d}",
                                 "value": rail,
-                                "position": [pos[0], pos[1]],
+                                "position": [ex, ey],
                                 "footprint": "",
                             },
                         )
                     else:
                         label = _safe_label(net_name)
                         for _ref, _pin, pos in members:
+                            ex, ey = stub_end(_ref, pos)
+                            await mcp.call(
+                                "add_wire",
+                                {"start_pos": [pos[0], pos[1]], "end_pos": [ex, ey]},
+                            )
                             await mcp.call(
                                 "add_label",
-                                {"text": label, "position": [pos[0], pos[1]]},
+                                {"text": label, "position": [ex, ey]},
                             )
 
                 await mcp.call("save_schematic", {"file_path": str(sch_path)})
