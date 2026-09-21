@@ -3,10 +3,18 @@ BOM (Bill of Materials) generation
 """
 import logging
 import csv
+import re
 from typing import Dict, List, Any
 from io import StringIO
 
 logger = logging.getLogger(__name__)
+
+# Subcircuit instances whose model names a chip are ICs, not generic modules
+_IC_MODEL_RE = re.compile(
+    r"^(?:[a-z]{0,3}555|555|lm\d|tl\d|ne\d|ua7|adc\d|dac\d|atmega|attiny"
+    r"|pic1|stm32|esp32|cd40|max\d|ds\d|74)",
+    re.I,
+)
 
 
 class BOMGenerator:
@@ -94,10 +102,22 @@ class BOMGenerator:
         components = []
         lines = netlist.strip().split('\n')
 
+        subckt_depth = 0
         for line in lines:
             line = line.strip()
             # Skip comments, commands, and continuations
-            if not line or line.startswith('*') or line.startswith('.') or line.startswith('+'):
+            if not line or line.startswith('*') or line.startswith('+'):
+                continue
+            low = line.lower()
+            if low.startswith('.subckt'):
+                subckt_depth += 1
+                continue
+            if subckt_depth:
+                # behavioural macro-model internals are not purchasable parts
+                if low.startswith('.ends'):
+                    subckt_depth -= 1
+                continue
+            if line.startswith('.'):
                 continue
 
             parts = line.split()
@@ -179,6 +199,8 @@ class BOMGenerator:
 
         # Check for LED specifically
         lower_value = value.lower()
+        if prefix == "X" and _IC_MODEL_RE.match(value):
+            return "IC"
         if prefix == "J":
             return "Connector"
         if prefix == "K":

@@ -8,6 +8,14 @@ import math
 
 logger = logging.getLogger(__name__)
 
+# Subcircuit instances whose model names a chip (NE555, LM393, ...) are ICs
+# on the board, not "modules"; anything else behind an X stays a module.
+_IC_MODEL_RE = re.compile(
+    r"^(?:[a-z]{0,3}555|555|lm\d|tl\d|ne\d|ua7|adc\d|dac\d|atmega|attiny"
+    r"|pic1|stm32|esp32|cd40|max\d|ds\d|74)",
+    re.I,
+)
+
 
 class PCBGenerator:
     """Generate PCB layouts using KiCad"""
@@ -74,9 +82,22 @@ class PCBGenerator:
         components = []
         lines = netlist.strip().split('\n')
 
+        subckt_depth = 0
         for line in lines:
             line = line.strip()
-            if not line or line.startswith('*') or line.startswith('.') or line.startswith('+'):
+            if not line or line.startswith('*') or line.startswith('+'):
+                continue
+            low = line.lower()
+            if low.startswith('.subckt'):
+                subckt_depth += 1
+                continue
+            if subckt_depth:
+                # behavioural macro-model internals (B/S/RDIV helpers inside
+                # a .subckt) are simulation scaffolding, not board parts
+                if low.startswith('.ends'):
+                    subckt_depth -= 1
+                continue
+            if line.startswith('.'):
                 continue
 
             parts = line.split()
@@ -86,36 +107,47 @@ class PCBGenerator:
                 value = parts[-1]
 
                 comp_type = comp_name[0].upper()
+                if comp_type == "X" and _IC_MODEL_RE.match(value):
+                    comp_type = "U"
 
                 component = {
                     "name": comp_name,
                     "type": comp_type,
                     "value": value,
-                    "footprint": self._get_footprint(comp_type, value),
+                    "footprint": self._get_footprint(comp_type, value, len(nodes)),
                     "position": {"x": 0, "y": 0}  # Will be calculated
                 }
                 components.append(component)
 
         return components
 
-    def _get_footprint(self, comp_type: str, value: str) -> str:
+    def _get_footprint(self, comp_type: str, value: str, pins: int = 0) -> str:
         """
         Get KiCad footprint for component
 
         Args:
             comp_type: Component type
             value: Component value
+            pins: Pin count of the parsed element (selects DIP size for ICs)
 
         Returns:
             Footprint name
         """
+        if comp_type == "U":
+            if pins and pins > 8:
+                if pins <= 14:
+                    return "Package_DIP:DIP-14_W7.62mm"
+                if pins <= 16:
+                    return "Package_DIP:DIP-16_W7.62mm"
+                if pins <= 20:
+                    return "Package_DIP:DIP-20_W7.62mm"
+            return "Package_DIP:DIP-8_W7.62mm"
         footprints = {
             "R": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
             "C": "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
             "L": "Inductor_THT:L_Axial_L12.0mm_D4.5mm_P15.00mm",
             "D": "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal",
             "Q": "Package_TO_SOT_THT:TO-92",
-            "U": "Package_DIP:DIP-8_W7.62mm",
             "V": "TestPoint:TestPoint_THT_Pad_D2.0mm_Drill1.0mm"
         }
         return footprints.get(comp_type, "Unknown")
