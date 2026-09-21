@@ -80,7 +80,9 @@ IR_NETS = [
 
 def test_pin_geometry():
     libs = _pin_offsets_from_lib_symbols(SCH)
-    assert libs["Device:R"] == {"1": (0.0, 3.81), "2": (0.0, -3.81)}, libs
+    # multi-unit shape: {lib_id: {unit: {pin number: (dx, dy)}}}; a resistor
+    # has no root-shared pins, so only unit 1 is present
+    assert libs["Device:R"] == {1: {"1": (0.0, 3.81), "2": (0.0, -3.81)}}, libs
     pos = _pin_positions_from_sch(SCH)
     # lib pins are y-up, sheet is y-down: pin1 (0,3.81) lands above (100,100)
     assert pos[("R1", "1")] == (100.0, 96.19), pos
