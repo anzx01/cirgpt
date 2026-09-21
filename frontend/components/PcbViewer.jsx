@@ -268,7 +268,7 @@ export default function PcbViewer({ layout, image }) {
       {/* Info */}
       <Box sx={{ mt: 2 }}>
         <Typography variant="body2" color="text.secondary">
-          💡 提示：绿色区域代表铜走线，元件以黑色矩形显示。使用缩放按钮获得更好的视觉效果（支持Ctrl+S快捷下载）。
+          💡 提示：绿色为阻焊层板面，金色为铜走线与焊盘（中心为钻孔），白色为丝印位号。顶部/底部横线为 VCC/GND 电源总线。使用缩放按钮获得更好的视觉效果（支持Ctrl+S快捷下载）。
         </Typography>
       </Box>
     </Box>

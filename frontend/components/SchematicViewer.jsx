@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Paper,
@@ -13,6 +13,7 @@ import {
 } from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
+import FitScreenIcon from '@mui/icons-material/FitScreen';
 import DownloadIcon from '@mui/icons-material/Download';
 import { downloadSVG } from '../lib/downloadUtils';
 
@@ -33,18 +34,70 @@ export default function SchematicViewer({ svg, pages }) {
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState(null);
   const [pageIndex, setPageIndex] = useState(0);
+  const containerRef = useRef(null);
+  const userZoomedRef = useRef(false);
 
   const isPaged = Boolean(pages && pages.pages && pages.pages.length > 0);
   const pageList = isPaged ? pages.pages : [];
   const currentPage = pageList[pageIndex];
   const currentSvg = isPaged ? (currentPage?.svg || '') : svg;
 
+  // SVG intrinsic aspect from its viewBox; the zoom buttons size the svg as a
+  // percentage of container width, so fitting needs the drawing's real shape.
+  const svgAspect = useMemo(() => {
+    const m = /viewBox="([\d.\-]+)\s+([\d.\-]+)\s+([\d.]+)\s+([\d.]+)"/.exec(currentSvg || '');
+    if (!m) return null;
+    const w = parseFloat(m[3]);
+    const h = parseFloat(m[4]);
+    return w > 0 && h > 0 ? w / h : null;
+  }, [currentSvg]);
+
   useEffect(() => {
     setPageIndex(0);
+    userZoomedRef.current = false;
   }, [pages, svg]);
 
-  const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.2, 3));
-  const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.2, 0.4));
+  const applyFit = () => {
+    const el = containerRef.current;
+    if (!el || !svgAspect) return null;
+    const { clientWidth: W, clientHeight: H } = el;
+    if (!W || !H) return null;
+    const pad = 24;
+    // rendered width = zoom * W; rendered height = width / aspect
+    const fit = Math.min((W - pad) / W, ((H - pad) * svgAspect) / W);
+    const clamped = Math.max(0.4, Math.min(3, fit));
+    setZoom(clamped);
+    return clamped;
+  };
+
+  // Fit on mount / page change / container resize until the user zooms
+  // manually; afterwards their choice wins.
+  useEffect(() => {
+    if (!svgAspect) return undefined;
+    applyFit();
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => {
+      if (!userZoomedRef.current) applyFit();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [svgAspect, pageIndex]);
+
+  const handleZoomIn = () => {
+    userZoomedRef.current = true;
+    setZoom(prev => Math.min(prev + 0.2, 3));
+  };
+
+  const handleZoomOut = () => {
+    userZoomedRef.current = true;
+    setZoom(prev => Math.max(prev - 0.2, 0.4));
+  };
+
+  const handleFit = () => {
+    userZoomedRef.current = false;
+    applyFit();
+  };
 
   const handleDownload = () => {
     if (!currentSvg) {
@@ -118,6 +171,11 @@ export default function SchematicViewer({ svg, pages }) {
               </IconButton>
             </span>
           </Tooltip>
+          <Tooltip title="Fit to view">
+            <IconButton onClick={handleFit} size="small">
+              <FitScreenIcon />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Download SVG (Ctrl+S)">
             <IconButton onClick={handleDownload} size="small">
               <DownloadIcon />
@@ -143,6 +201,7 @@ export default function SchematicViewer({ svg, pages }) {
       )}
 
       <Paper
+        ref={containerRef}
         elevation={1}
         sx={{
           p: 2,
