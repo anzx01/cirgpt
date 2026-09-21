@@ -151,6 +151,28 @@ async def generate_circuit(
     }
 
 
+@router.post("/{design_id}/poweron", summary="Run a power-on (DC scenario) test")
+async def power_on_circuit(
+    design_id: int,
+    service: CircuitService = Depends(get_circuit_service)
+):
+    """
+    Power-on test: modelled DC operating points across input scenarios
+    (e.g. soil wet/dry), executed by the EDA service via ngspice.
+    """
+    design = await service.get_design(design_id)
+    if not design:
+        raise HTTPException(status_code=404, detail="Circuit design not found")
+    if not design.circuit_ir:
+        raise HTTPException(status_code=400, detail="该设计还没有 CircuitIR，请先生成设计")
+
+    try:
+        return await service.power_on_test(design.circuit_ir)
+    except Exception as e:
+        logger.error(f"Power-on test failed for design {design_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/{design_id}/status", response_model=DesignStatus, summary="Get generation status")
 async def get_circuit_status(
     design_id: int,

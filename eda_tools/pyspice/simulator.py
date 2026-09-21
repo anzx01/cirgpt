@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import os
 import re
+from pathlib import Path
 import numpy as np
 from typing import Dict, List, Any, Optional
 
@@ -16,10 +17,27 @@ logger = logging.getLogger(__name__)
 # ngspice_con first: the windowed ngspice.exe shipped in official Windows
 # builds hangs on "--version" (no console), so probing it always times out.
 _NGSPICE_CANDIDATES = ["ngspice_con", "ngspice", "ngspice-64", "ngspice64"]
+# Project-local install (START.bat puts it on PATH; probe it directly so the
+# service finds it even when launched without that PATH).
+_REPO_SPICE64 = Path(__file__).resolve().parents[1] / "Spice64" / "bin"
+
+
+def _local_ngspice() -> Optional[str]:
+    env = os.environ.get("NGSPICE_BIN")
+    if env and Path(env).is_file():
+        return env
+    for name in ("ngspice_con.exe", "ngspice.exe"):
+        candidate = _REPO_SPICE64 / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _find_ngspice() -> Optional[str]:
     """Return the first usable ngspice executable, or None."""
+    local = _local_ngspice()
+    if local:
+        return local
     for candidate in _NGSPICE_CANDIDATES:
         try:
             subprocess.run(

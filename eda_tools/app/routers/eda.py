@@ -20,6 +20,7 @@ from pyspice.simulator import simulate_circuit
 from kicad.pcb_generator import generate_pcb
 from bom.bom_generator import generate_bom
 from circuit_ir import generate_kicad_pcb_preview, generate_spice_netlist
+from power_on import run_power_on
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,21 @@ class NetlistRequest(BaseModel):
 class SimulationRequest(BaseModel):
     """Request for circuit simulation"""
     netlist: str
+
+
+class PowerOnRequest(BaseModel):
+    """Request for a power-on (DC scenario) test from CircuitIR"""
+    circuit_ir: Dict[str, Any]
+
+
+@router.post("/poweron")
+async def power_on_endpoint(request: PowerOnRequest) -> Dict[str, Any]:
+    """Power-on test: modelled DC operating points across input scenarios."""
+    try:
+        return run_power_on(request.circuit_ir)
+    except Exception as e:
+        logger.error(f"Power-on test failed: {e}")
+        raise HTTPException(status_code=422, detail=f"通电测试失败: {e}")
 
 
 class PCBRequest(BaseModel):

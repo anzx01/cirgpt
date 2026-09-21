@@ -26,13 +26,15 @@ import {
   Home as HomeIcon,
   FactCheck as ValidationIcon,
   Download as DownloadIcon,
-  Visibility as VisibilityIcon
+  Visibility as VisibilityIcon,
+  Bolt as PowerOnIcon
 } from '@mui/icons-material';
 import SchematicViewer from '../../../components/SchematicViewer';
 import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
 import BomViewer from '../../../components/BomViewer';
 import RawDeepseekDialog from '../../../components/RawDeepseekDialog';
+import PowerOnTest from '../../../components/PowerOnTest';
 import { API_BASE_URL, WEBSOCKET_URL } from '../../../config.mjs';
 import { PollingManager } from '../../../lib/pollingUtils';
 import { formatUserError } from '../../../lib/errorUtils';
@@ -453,6 +455,11 @@ export default function DesignResultPage() {
             label="验证"
             disabled={isProcessing || !design?.validation}
           />
+          <Tab
+            icon={<PowerOnIcon />}
+            label="通电测试"
+            disabled={isProcessing || !design?.circuit_ir}
+          />
         </Tabs>
 
         <TabPanel value={tabValue} index={0}>
@@ -521,6 +528,10 @@ export default function DesignResultPage() {
               ))}
             </Box>
           </Box>
+        </TabPanel>
+
+        <TabPanel value={tabValue} index={5}>
+          <PowerOnTest designId={designId} hasIr={!!design?.circuit_ir} />
         </TabPanel>
       </Paper>
 

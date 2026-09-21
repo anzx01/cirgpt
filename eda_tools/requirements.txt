@@ -11,6 +11,10 @@ skidl==2.2.3
 # Server API which mcp 2.x removed.
 mcp>=1.0.0,<2
 kicad-sch-api>=0.5.0
+# Vendored wheel = upstream circuit-synth/mcp-kicad-sch-api tag v0.2.2
+# (wheel lives in that repo's dist/) plus our patch: add_component accepts a
+# "unit" argument so multi-unit symbols (LM358 dual opamp, ...) can place
+# every unit under one reference.
 ./wheels/mcp_kicad_sch_api-0.2.2-py3-none-any.whl
 
 # KiCad integration (requires KiCad to be installed)

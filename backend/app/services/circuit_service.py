@@ -343,6 +343,23 @@ class CircuitService:
 
         return response.json()
 
+    async def power_on_test(self, circuit_ir: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run a power-on (DC scenario) test via the EDA service.
+        """
+        logger.info("Running power-on test with EDA service")
+
+        http_client = get_http_client()
+        response = await http_client.post(
+            f"{self.eda_service_url}/eda/poweron",
+            json={"circuit_ir": circuit_ir},
+        )
+
+        if response.status_code != 200:
+            raise Exception(f"EDA service error: {response.status_code} {response.text}")
+
+        return response.json()
+
     async def _simulate_circuit(self, netlist: str) -> Dict[str, Any]:
         """
         Simulate circuit using EDA service

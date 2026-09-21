@@ -126,6 +126,29 @@ def _rail_symbol(name: Any) -> Optional[str]:
     return None
 
 
+def _subsystem_of(comp: Dict[str, Any]) -> str:
+    """Grouping key for layout columns.
+
+    The AI sometimes omits `subsystem` entirely (every component then lands in
+    one "other" column, producing a 1:11 vertical strip). Fall back to the
+    role's leading word (sensor_pullup -> sensor), then to a type class.
+    """
+    sub = str(comp.get("subsystem") or "").strip()
+    if sub:
+        return sub
+    role = str(comp.get("role") or "").strip().lower().replace("-", "_")
+    if role:
+        head = role.split("_")[0]
+        if head:
+            return head
+    t = str(comp.get("type") or "").strip().lower()
+    if t in {"resistor", "capacitor", "cap"}:
+        return "passive"
+    if t in {"connector", "test_point"}:
+        return "connector"
+    return "other"
+
+
 def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     t = str(comp.get("type") or "").lower()
     v = str(comp.get("value") or "")
@@ -156,8 +179,21 @@ def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         return ("Device", "Fuse")
     if t in {"switch", "button"}:
         return ("Switch", "SW_SPST")
-    if t in {"mosfet", "transistor_mosfet", "fet", "power_mosfet"}:
-        if "PMOS" in (t + vu) or "-P" in vu:
+    if t in {
+        "mosfet",
+        "transistor_mosfet",
+        "fet",
+        "power_mosfet",
+        "nmos",
+        "pmos",
+        "n_mosfet",
+        "p_mosfet",
+        "n_channel_mosfet",
+        "p_channel_mosfet",
+        "n_channel_fet",
+        "p_channel_fet",
+    }:
+        if "PMOS" in (t + vu).upper().replace(" ", "") or "-P" in vu:
             return ("Device", "Q_PMOS")
         return ("Device", "Q_NMOS")
     if t in {"bjt", "transistor", "transistor_npn"}:
@@ -169,6 +205,10 @@ def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     if t == "timer_ic":
         return ("Timer", "LM555xN")
     if t == "opamp":
+        return ("Amplifier_Operational", "LM358")
+    # LM393-style comparator: DIP8 pinout is identical to the LM358 symbol
+    # (1=OUT1 2=IN1- 3=IN1+ 4=GND 5=IN2+ 6=IN2- 7=OUT2 8=VCC).
+    if t in {"comparator", "comparator_ic"}:
         return ("Amplifier_Operational", "LM358")
     if t == "microcontroller":
         return ("MCU_Microchip_ATmega", "ATmega328P-P")
@@ -196,6 +236,8 @@ def _footprint_for(lib: str, sym: str, comp: Dict[str, Any]) -> str:
     if (lib, sym) == ("Device", "LED"):
         return LED_FP
     if t == "timer_ic":
+        return DIP8_FP
+    if t in {"opamp", "comparator", "comparator_ic"}:
         return DIP8_FP
     if t in {"switch", "button"}:
         return SW_FP
@@ -403,8 +445,46 @@ def _child_blocks(text: str, start: int, end: int) -> List[Tuple[str, int, int]]
     return blocks
 
 
-def _pin_offsets_from_lib_symbols(text: str) -> Dict[str, Dict[str, Tuple[float, float]]]:
-    """Map lib_id -> {pin_number: (dx, dy)} from the embedded lib_symbols block."""
+def _unit_pins_from_symbol_block(block: str) -> Dict[int, Dict[str, Tuple[float, float]]]:
+    """{unit: {pin_number: (dx, dy)}} for one symbol block.
+
+    Unit 0 holds pins declared on the root symbol (shared by every unit);
+    unit N >= 1 holds the pins of sub-symbol ``NAME_N_<convert>``.
+    """
+    units: Dict[int, Dict[str, Tuple[float, float]]] = {}
+    stack: List[Tuple[str, int]] = [(block, 0)]
+    while stack:
+        current, unit_no = stack.pop()
+        # Spans of child sub-symbol blocks; pins inside those spans belong to
+        # the child's unit, not to this level.
+        child_spans: List[Tuple[int, int]] = []
+        for sub, ss, se in _child_blocks(current, 0, len(current)):
+            sub_match = re.match(r"\(\s*symbol\s+\"([^\"]+)\"", sub)
+            if sub_match:
+                child_spans.append((ss, se))
+                unit_m = re.search(r"_(\d+)_(\d+)$", sub_match.group(1))
+                stack.append((sub, int(unit_m.group(1)) if unit_m else 0))
+        for pin_match in re.finditer(r"\(\s*pin\b", current):
+            start = pin_match.start()
+            if any(ss <= start <= se for ss, se in child_spans):
+                continue
+            pin_open = start
+            pin_close = _matching_paren(current, pin_open)
+            pin_block = current[pin_open:pin_close + 1]
+            at_match = re.search(
+                r"\(\s*at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+-?[\d.]+)?\s*\)", pin_block
+            )
+            num_match = re.search(r'\(\s*number\s+"([^"]+)"', pin_block)
+            if at_match and num_match:
+                units.setdefault(unit_no, {})[num_match.group(1)] = (
+                    float(at_match.group(1)),
+                    float(at_match.group(2)),
+                )
+    return units
+
+
+def _pin_offsets_from_lib_symbols(text: str) -> Dict[str, Dict[int, Dict[str, Tuple[float, float]]]]:
+    """Map lib_id -> unit pin offsets from the embedded lib_symbols block."""
     lib_start = text.find("(lib_symbols")
     if lib_start < 0:
         return {}
@@ -413,35 +493,63 @@ def _pin_offsets_from_lib_symbols(text: str) -> Dict[str, Dict[str, Tuple[float,
     if lib_end < 0:
         return {}
 
-    result: Dict[str, Dict[str, Tuple[float, float]]] = {}
+    result: Dict[str, Dict[int, Dict[str, Tuple[float, float]]]] = {}
     for block, _s, _e in _child_blocks(text, open_paren, lib_end + 1):
         name_match = re.match(r'\(\s*symbol\s+"([^"]+)"', block)
         if not name_match:
             continue
-        lib_id = name_match.group(1)
-        pins: Dict[str, Tuple[float, float]] = {}
-        # Pins can sit on the lib symbol itself or inside unit sub-symbols.
-        stack = [block]
-        while stack:
-            current = stack.pop()
-            for sub, _ss, _se in _child_blocks(current, 0, len(current)):
-                if re.match(r"\(\s*symbol\b", sub):
-                    stack.append(sub)
-            for pin_match in re.finditer(r"\(\s*pin\b", current):
-                pin_open = pin_match.start()
-                pin_close = _matching_paren(current, pin_open)
-                pin_block = current[pin_open:pin_close + 1]
-                at_match = re.search(
-                    r"\(\s*at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+-?[\d.]+)?\s*\)", pin_block
-                )
-                num_match = re.search(r'\(\s*number\s+"([^"]+)"', pin_block)
-                if at_match and num_match:
-                    pins[num_match.group(1)] = (
-                        float(at_match.group(1)),
-                        float(at_match.group(2)),
-                    )
-        if pins:
-            result[lib_id] = pins
+        units = _unit_pins_from_symbol_block(block)
+        if units:
+            result[name_match.group(1)] = units
+    return result
+
+
+def _symbol_units_from_lib(
+    symbol_dir: Path, lib_ids: List[str]
+) -> Dict[str, Dict[int, Set[str]]]:
+    """{lib_id: {unit: {pin numbers}}} read from the KiCad symbol libraries.
+
+    Tells the placer which units a multi-unit symbol is made of so IR-used
+    units can be placed; single-unit symbols come back as {1: {...}}.
+    """
+    lib_text: Dict[str, str] = {}
+    result: Dict[str, Dict[int, Set[str]]] = {}
+    for lib_id in lib_ids:
+        lib, _, name = lib_id.partition(":")
+        if not name:
+            continue
+        if lib not in lib_text:
+            path = Path(symbol_dir) / f"{lib}.kicad_sym"
+            try:
+                lib_text[lib] = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                lib_text[lib] = ""
+        text = lib_text.get(lib, "")
+        units: Dict[int, Set[str]] = {}
+        # KiCad >= 10 lib files quote top-level symbols without the library
+        # prefix; embedded lib_symbols blocks in schematics keep it. Aliases
+        # carry an (extends "BASE") and keep their pins on the base symbol.
+        name_pattern = r'\(\s*symbol\s+"(?:' + re.escape(lib_id) + r"|" + re.escape(name) + r')"'
+        anchor = re.search(name_pattern, text)
+        for _hop in range(8):
+            if not anchor:
+                break
+            open_paren = text.find("(", anchor.start())
+            end = _matching_paren(text, open_paren)
+            if end < 0:
+                break
+            block = text[open_paren : end + 1]
+            extends_m = re.search(r'\(\s*extends\s+"([^"]+)"', block)
+            if not extends_m:
+                for unit, pins in _unit_pins_from_symbol_block(block).items():
+                    units[unit] = set(pins)
+                break
+            anchor = re.search(
+                r'\(\s*symbol\s+"' + re.escape(extends_m.group(1)) + r'"', text
+            )
+        if not units:
+            units = {1: set()}
+        result[lib_id] = units
     return result
 
 
@@ -468,6 +576,7 @@ def _symbol_instances(text: str) -> List[Dict[str, Any]]:
         at_m = re.search(
             r"\(\s*at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+(-?[\d.]+))?\s*\)", block
         )
+        unit_m = re.search(r"\(\s*unit\s+(\d+)\s*\)", block)
         ref_m = re.search(r'\(\s*property\s+"Reference"\s+"([^"]+)"', block)
         if lib_id_m and at_m and ref_m:
             instances.append(
@@ -476,6 +585,7 @@ def _symbol_instances(text: str) -> List[Dict[str, Any]]:
                     "x": float(at_m.group(1)),
                     "y": float(at_m.group(2)),
                     "rot": float(at_m.group(3) or 0),
+                    "unit": int(unit_m.group(1)) if unit_m else 1,
                     "ref": ref_m.group(1),
                 }
             )
@@ -483,11 +593,19 @@ def _symbol_instances(text: str) -> List[Dict[str, Any]]:
 
 
 def _pin_positions_from_sch(text: str) -> Dict[Tuple[str, str], Tuple[float, float]]:
-    """Exact {(ref, pin): (x, y)} for every placed symbol instance."""
-    lib_pins = _pin_offsets_from_lib_symbols(text)
+    """Exact {(ref, pin): (x, y)} for every placed symbol instance.
+
+    A multi-unit instance only owns the pins of its own unit plus the pins
+    shared at the symbol root; sibling units' pins belong to their own
+    instances.
+    """
+    lib_units = _pin_offsets_from_lib_symbols(text)
     positions: Dict[Tuple[str, str], Tuple[float, float]] = {}
     for inst in _symbol_instances(text):
-        pins = lib_pins.get(inst["lib_id"])
+        units = lib_units.get(inst["lib_id"])
+        if not units:
+            continue
+        pins = {**(units.get(0) or {}), **(units.get(inst["unit"]) or {})}
         if not pins:
             continue
         theta = radians(inst["rot"])
@@ -1018,25 +1136,70 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
 
     placed_refs = {str(comp.get("ref")) for comp, _lib, _sym in placed if comp.get("ref")}
 
+    # Multi-unit symbols (dual opamps, MCUs with per-bank units...): the IR
+    # references pins by number, so look up which unit owns each pin and
+    # place every unit that owns at least one IR-referenced pin, stacked
+    # below unit 1 under the same reference.
+    symbol_dir = kicad_root / "share" / "kicad" / "symbols"
+    unit_pins = _symbol_units_from_lib(
+        symbol_dir, [f"{lib}:{sym}" for _comp, lib, sym in placed]
+    )
+    ref_pins: Dict[str, Set[str]] = {}
+    for net in ir.get("nets") or []:
+        if not isinstance(net, dict):
+            continue
+        for conn in net.get("connections") or []:
+            r, _, p = str(conn).rpartition(".")
+            if r and p:
+                ref_pins.setdefault(r, set()).add(p)
+
+    def needed_units(ref: str, lib_id: str) -> List[int]:
+        units = unit_pins.get(lib_id) or {}
+        used = ref_pins.get(ref, set())
+        wanted = sorted(u for u, pins in units.items() if pins & used)
+        return wanted or [1]
+
+    UNIT_STACK_DY = 25.4
+    stack_extra: Dict[str, float] = {}
+    for comp, lib, sym in placed:
+        ref = str(comp.get("ref") or "")
+        stack_extra[ref] = (len(needed_units(ref, f"{lib}:{sym}")) - 1) * UNIT_STACK_DY
+
     # Layout: one column per subsystem (IR order), components stacked. Wide
     # ICs (28-pin DIPs etc.) need generous pitch; retries with larger spacing
-    # if any two placed pins land on the same coordinate.
-    subsystem_order: List[str] = []
+    # if any two placed pins land on the same coordinate. Subsystem groups are
+    # packed into a balanced grid (target ~sqrt(n) columns) so an IR whose
+    # groups are tiny or missing still gets a sane sheet instead of one
+    # giant column.
+    groups: List[Tuple[str, List[Dict[str, Any]]]] = []
+    by_sub: Dict[str, List[Dict[str, Any]]] = {}
     for comp, _lib, _sym in placed:
-        sub = str(comp.get("subsystem") or "other")
-        if sub not in subsystem_order:
-            subsystem_order.append(sub)
+        sub = _subsystem_of(comp)
+        if sub not in by_sub:
+            by_sub[sub] = []
+            groups.append((sub, by_sub[sub]))
+        by_sub[sub].append(comp)
+
+    n = len(placed)
+    target_cols = 2
+    while target_cols * target_cols < n:
+        target_cols += 1
+    max_rows = max((n + target_cols - 1) // target_cols, max(len(g) for _s, g in groups))
+
+    columns: List[List[Dict[str, Any]]] = [[]]
+    for _sub, comps in groups:
+        if columns[-1] and len(columns[-1]) + len(comps) > max_rows:
+            columns.append([])
+        columns[-1].extend(comps)
 
     def layout_positions(col_dx: float, row_dy: float) -> Dict[str, Tuple[float, float]]:
         positions: Dict[str, Tuple[float, float]] = {}
-        row_of: Dict[str, int] = {}
-        for comp, _lib, _sym in placed:
-            sub = str(comp.get("subsystem") or "other")
-            col = subsystem_order.index(sub)
-            row = row_of.get(sub, 0)
-            row_of[sub] = row + 1
-            ref = str(comp.get("ref"))
-            positions[ref] = (50.0 + col * col_dx, 60.0 + row * row_dy)
+        for col_idx, column in enumerate(columns):
+            y = 60.0
+            for comp in column:
+                ref = str(comp.get("ref"))
+                positions[ref] = (50.0 + col_idx * col_dx, y)
+                y += row_dy + stack_extra.get(ref, 0.0)
         return positions
 
     pwr_i = 0
@@ -1051,22 +1214,27 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
 
                 placed_ok = False
                 for col_dx, row_dy in ((55.0, 42.0), (75.0, 60.0), (100.0, 80.0)):
-                    columns_x = [50.0 + i * col_dx for i in range(len(subsystem_order))]
+                    columns_x = [50.0 + i * col_dx for i in range(len(columns))]
                     await mcp.call("create_schematic", {"name": safe_name})
                     positions = layout_positions(col_dx, row_dy)
                     for idx, (comp, lib, sym) in enumerate(placed):
                         ref = str(comp.get("ref") or f"U{idx + 1}")
                         x, y = positions.get(ref, (50.0, 60.0))
-                        await mcp.call(
-                            "add_component",
-                            {
-                                "lib_id": f"{lib}:{sym}",
+                        lib_id = f"{lib}:{sym}"
+                        for u_i, unit_no in enumerate(needed_units(ref, lib_id)):
+                            args = {
+                                "lib_id": lib_id,
                                 "reference": ref,
                                 "value": _fmt_value(comp),
-                                "position": [round(x, 3), round(y, 3)],
+                                "position": [
+                                    round(x, 3),
+                                    round(y + u_i * UNIT_STACK_DY, 3),
+                                ],
                                 "footprint": _footprint_for(lib, sym, comp),
-                            },
-                        )
+                            }
+                            if unit_no != 1:
+                                args["unit"] = unit_no
+                            await mcp.call("add_component", args)
 
                     # Save so the exact (grid-snapped) symbol geometry is on
                     # disk, then compute pin positions from the file itself:
