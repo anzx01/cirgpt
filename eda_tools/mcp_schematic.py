@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -319,6 +320,17 @@ _TRANSISTOR_LIBS = {
     "Device:Q_NPN": {"gnd": "E", "rail": "E", "drive": "B", "load": "C"},
     "Device:Q_PNP": {"gnd": "C", "rail": "C", "drive": "B", "load": "E"},
 }
+
+
+def _label_stub_len(label: str) -> float:
+    """Stub length that keeps a net label's text clear of the pin it names.
+
+    KiCad draws label text left-to-right from the anchor regardless of the
+    label's rotation, so the wire stub must be at least as long as the text
+    (about 0.9x font size per char) plus one grid of clearance, rounded up
+    to a whole grid and never shorter than two grids.
+    """
+    return 2.54 * max(2, math.ceil((0.9 * 1.27 * len(label) + 1.27) / 2.54))
 
 
 def _pin_aliases(
@@ -1290,6 +1302,12 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                 wire_plans = _plan_wire_routes(
                     ir.get("nets") or [], placed_refs, aliases, pin_positions, columns_x
                 )
+                # Layout midline: vertical stubs (pins above/below a symbol)
+                # carry their label sideways; pointing the text at the
+                # nearer outside margin keeps it off the IC body, the trunk
+                # channels, and neighboring symbols in the middle.
+                xs = [p[0] for p in positions.values()] or [0.0]
+                mid_x = (min(xs) + max(xs)) / 2.0
 
                 def pin_pos(ref: str, pin: str) -> Optional[Tuple[float, float]]:
                     pos = pin_positions.get((ref, pin))
@@ -1343,18 +1361,19 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                     rail = "GND" if _is_gnd(net_name) else _rail_symbol(net_name)
 
                     def stub_end(ref: str, pos: Tuple[float, float]) -> Tuple[float, float]:
-                        """Pin position shifted one grid outward from the symbol.
+                        """Pin position shifted outward from the symbol.
 
-                        Labels / power symbols sitting exactly on the pin
-                        render their text over the pin-number column; a short
-                        stub wire keeps connectivity while moving the text off
-                        the symbol body.
+                        Power symbols and their value text sitting one grid
+                        off the pin still render over the pin-number column
+                        and the neighboring pin names (KiCad 10 always draws
+                        label/symbol text left-to-right from its anchor), so
+                        rail stubs clear the whole pin-name strip.
                         """
                         cx, cy = positions.get(ref, pos)
                         dx, dy = pos[0] - cx, pos[1] - cy
                         if abs(dx) >= abs(dy):
-                            return (pos[0] + (2.54 if dx >= 0 else -2.54), pos[1])
-                        return (pos[0], pos[1] + (2.54 if dy >= 0 else -2.54))
+                            return (pos[0] + (7.62 if dx >= 0 else -7.62), pos[1])
+                        return (pos[0], pos[1] + (7.62 if dy >= 0 else -7.62))
 
                     if rail:
                         for ref, pin, pos in members:
@@ -1392,15 +1411,39 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                         )
                     else:
                         label = _safe_label(net_name)
+                        # KiCad draws label text left-to-right starting at
+                        # the anchor, whatever the label's rotation. Size
+                        # the stub so the text stops short of the pin it
+                        # labels instead of running over the pin number,
+                        # pin name, or symbol body.
+                        stub = _label_stub_len(label)
                         for _ref, _pin, pos in members:
-                            ex, ey = stub_end(_ref, pos)
-                            await mcp.call(
-                                "add_wire",
-                                {"start_pos": [pos[0], pos[1]], "end_pos": [ex, ey]},
-                            )
+                            cx, cy = positions.get(_ref, pos)
+                            dx, dy = pos[0] - cx, pos[1] - cy
+                            if abs(dx) >= abs(dy):
+                                # Side pin: straight stub away from the body.
+                                step = stub if dx >= 0 else -stub
+                                seg_pts = [(pos[0], pos[1]), (pos[0] + step, pos[1])]
+                            else:
+                                # Top/bottom pin: dogleg one grid off the
+                                # pin, then toward the outside margin, so
+                                # the text reads across clear space.
+                                step = 2.54 if dy >= 0 else -2.54
+                                out = -stub if pos[0] < mid_x else stub
+                                seg_pts = [
+                                    (pos[0], pos[1]),
+                                    (pos[0], pos[1] + step),
+                                    (pos[0] + out, pos[1] + step),
+                                ]
+                            end = seg_pts[-1]
+                            for a, b in zip(seg_pts, seg_pts[1:]):
+                                await mcp.call(
+                                    "add_wire",
+                                    {"start_pos": [a[0], a[1]], "end_pos": [b[0], b[1]]},
+                                )
                             await mcp.call(
                                 "add_label",
-                                {"text": label, "position": [ex, ey]},
+                                {"text": label, "position": [end[0], end[1]]},
                             )
 
                 await mcp.call("save_schematic", {"file_path": str(sch_path)})

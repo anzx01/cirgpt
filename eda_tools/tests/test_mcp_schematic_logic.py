@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 from mcp_schematic import (  # noqa: E402
     _connectivity_matches,
     _fmt_value,
+    _label_stub_len,
     _parse_netlist_nets,
     _pin_aliases,
     _pin_offsets_from_lib_symbols,
@@ -261,6 +262,17 @@ def test_unit0_pins_fold_into_unit1():
     # unit 1 instead of creating a phantom second instance to place.
     assert set(units["Timer:LM555xN"]) == {1}, units
     assert units["Timer:LM555xN"][1] == {"1", "2", "8"}, units
+
+
+def test_label_stub_length_covers_text():
+    # KiCad renders label text left-to-right from the anchor at any
+    # rotation, so the stub must outsize the text: ~0.9x1.27mm per char
+    # ("CTRL" is 3.55mm wide) plus a grid of clearance, grid-aligned.
+    assert _label_stub_len("OUT") == 5.08
+    assert _label_stub_len("CTRL") == 7.62
+    assert _label_stub_len("THRESH") == 10.16
+    # never shorter than two grids even for 1-2 char names
+    assert _label_stub_len("N1") == 5.08
 
 
 def main() -> int:
