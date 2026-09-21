@@ -86,7 +86,33 @@ S1   OUT VGND NCTL VGND PW_SWOC
 RIN INP INN 1MEG
 BOUT OUT VGND V = limit(200k*V(INP,INN), 0.2, V(VCC,VGND)-0.2)
 .ends
+.subckt PW_555 TRIG THR DIS OUT RST CTRL VCC VGND
+* astable behavioural NE555. Latch state lives on CNQ: set/reset conditions
+* each drive a voltage source that steers current through a diode into the
+* state cap; while neither condition holds both diodes are reverse-biased
+* and the charge (logic level) is held. A self-referenced B voltage source
+* instead would make the matrix singular, and a B current source with a DC
+* bleed resistor poisons the initial op point with I*R = ~100 kV.
+BSET  NS VGND V = (V(TRIG,VGND) < V(VCC,VGND)/3) ? V(VCC,VGND) : 0
+BRST  NR VGND V = (V(THR,VGND) > 2*V(VCC,VGND)/3) ? 0 : V(VCC,VGND)
+RS1   NS NQS 1k
+RS2   NQR NR 1k
+DSET  NQS NQ PW_555D
+DRST  NQ NQR PW_555D
+CNQ   NQ VGND 1u
+RNQ   NQ VGND 10MEG
+BOUT  OUT VGND V = (V(NQ,VGND) > 2) ? V(VCC,VGND) : 0
+BNDIS NDH VGND V = (V(NQ,VGND) > 2) ? 0 : 1
+S1    DIS VGND NDH VGND PW_555SW
+.model PW_555SW SW(VT=0.5 VH=0.05 RON=10 ROFF=100MEG)
+.model PW_555D D(IS=1e-12 N=0.5 RS=1)
+RCTL  CTRL VGND 10K
+.ends
 """
+
+_TIMER_TYPES = {"timer_ic", "ne555", "555", "ic_555", "ne555_timer", "timer"}
+# NE555 DIP8 pin -> logical name
+_555_PINS = {1: "gnd", 2: "trig", 3: "out", 4: "rst", 5: "ctrl", 6: "thr", 7: "dis", 8: "vcc"}
 
 _MOS_TYPES = {
     "mosfet", "transistor_mosfet", "fet", "power_mosfet", "nmos", "n_mosfet",
@@ -135,8 +161,9 @@ def _fmt_amp(a: float) -> str:
 class _Builder:
     """Turns one CircuitIR into a SPICE deck + scenario metadata."""
 
-    def __init__(self, ir: Dict[str, Any]):
+    def __init__(self, ir: Dict[str, Any], transient: bool = False):
         self.ir = ir
+        self.transient = transient  # transient mode may model timer ICs
         self.lines: List[str] = []
         self.assumptions: List[str] = []
         self.skipped: List[str] = []
@@ -145,6 +172,7 @@ class _Builder:
         self.nodes: List[str] = []          # measurement nodes (safe names)
         self.sensor: Optional[Dict[str, Any]] = None
         self.sensor_signal_node: Optional[str] = None
+        self.has_timer = False
 
     def build(self) -> None:
         comps = [c for c in self.ir.get("components", []) if isinstance(c, dict)]
@@ -213,9 +241,18 @@ class _Builder:
 
         if t == "led":
             if len(nd) >= 2:
-                line.append(f"D{ref} {nd[0]} {nd[1]} PW_LED")
-                # ngspice diode current parameter is 'id' (resistors use 'i')
-                self.actuators.append({"ref": comp.get("ref"), "type": "led", "element": f"@d{ref.lower()}[id]", "kind": "led"})
+                if self.transient:
+                    # @d..[id] device vectors freeze in transient wrdata output;
+                    # a 0V sense source keeps the current a live time vector
+                    s_node = f"{nd[0]}_S{ref}"
+                    line.append(f"V{ref}S {nd[0]} {s_node} 0")
+                    line.append(f"D{ref} {s_node} {nd[1]} PW_LED")
+                    element = f"i(v{ref.lower()}s)"
+                else:
+                    line.append(f"D{ref} {nd[0]} {nd[1]} PW_LED")
+                    # ngspice diode current parameter is 'id' (resistors use 'i')
+                    element = f"@d{ref.lower()}[id]"
+                self.actuators.append({"ref": comp.get("ref"), "type": "led", "element": element, "kind": "led"})
                 return
             raise ValueError("LED 引脚不足")
 
@@ -265,7 +302,13 @@ class _Builder:
             )
             return
 
-        if t in {"timer_ic", "microcontroller", "mcu"}:
+        if t in _TIMER_TYPES:
+            if not self.transient:
+                raise ValueError("555 定时器仅在上电瞬态仿真中建模，直流工况测试中排除")
+            self._emit_timer(comp)
+            return
+
+        if t in {"microcontroller", "mcu"}:
             raise ValueError(f"{t} 暂不支持自动建模，已从通电测试中排除")
 
         if t in _ACTUATOR_TYPES:
@@ -274,8 +317,15 @@ class _Builder:
             coil = _num(comp.get("value"), _ACTUATOR_COIL[t])
             if t == "buzzer" or t == "speaker":
                 coil = _ACTUATOR_COIL[t]  # numeric value is a rating, not ohms
-            line.append(f"R{ref} {nd[0]} {nd[1]} {_fmt(coil)}")
-            self.actuators.append({"ref": comp.get("ref"), "type": t, "element": f"@r{ref.lower()}[i]", "kind": "load"})
+            if self.transient:
+                s_node = f"{nd[0]}_S{ref}"
+                line.append(f"V{ref}S {nd[0]} {s_node} 0")
+                line.append(f"R{ref} {s_node} {nd[1]} {_fmt(coil)}")
+                element = f"i(v{ref.lower()}s)"
+            else:
+                line.append(f"R{ref} {nd[0]} {nd[1]} {_fmt(coil)}")
+                element = f"@r{ref.lower()}[i]"
+            self.actuators.append({"ref": comp.get("ref"), "type": t, "element": element, "kind": "load"})
             self.assumptions.append(f"{comp.get('ref')} ({t}) 按 {_fmt(coil)}Ω 阻性线圈建模")
             return
 
@@ -291,6 +341,51 @@ class _Builder:
     def _sensor_like(self, comp: Dict[str, Any]) -> bool:
         hay = f"{comp.get('value')} {comp.get('role')} {comp.get('ref')}".lower()
         return any(h in hay for h in _SENSOR_HINTS)
+
+    def _pin_net_map(self) -> Dict[str, Dict[int, str]]:
+        """{ref: {pin_number: net_name}} from the IR nets' connections."""
+        pin_map: Dict[str, Dict[int, str]] = {}
+        for net in self.ir.get("nets") or []:
+            if not isinstance(net, dict):
+                continue
+            name = str(net.get("name"))
+            for conn in net.get("connections") or []:
+                ref, _, pin = str(conn).rpartition(".")
+                if ref and pin.isdigit():
+                    pin_map.setdefault(ref, {})[int(pin)] = name
+        return pin_map
+
+    def _emit_timer(self, comp: Dict[str, Any]) -> None:
+        """Place the behavioural NE555 (DIP8 pin order from the IR nets)."""
+        ref = self._ref(comp)
+        raw_ref = str(comp.get("ref") or "")
+        pins: Dict[str, str] = {}
+        by_pin = self._pin_net_map().get(raw_ref) or {}
+        if len(by_pin) >= 6:
+            for num, logical in _555_PINS.items():
+                if num in by_pin:
+                    pins[logical] = _safe_node(by_pin[num])
+        if len(pins) < 6:
+            # positional fallback: nodes listed in DIP8 order
+            nd = self._nodes(comp)
+            if len(nd) >= 8 and nd[1] == nd[5]:  # astable ties TRIG to THR
+                for num, logical in _555_PINS.items():
+                    pins[logical] = nd[num - 1]
+        need = ("trig", "thr", "dis", "out", "vcc")
+        if any(k not in pins for k in need):
+            raise ValueError("555 引脚无法从 IR 的 nets/节点中映射")
+        pins.setdefault("rst", pins["vcc"])
+        pins.setdefault("ctrl", "NC_555_CTRL")
+        pins.setdefault("gnd", "0")
+        self.lines.append(
+            f"X{ref} {pins['trig']} {pins['thr']} {pins['dis']} {pins['out']} "
+            f"{pins['rst']} {pins['ctrl']} {pins['vcc']} {pins['gnd']} PW_555"
+        )
+        self.has_timer = True
+        self.assumptions.append(
+            f"{raw_ref} ({comp.get('value') or '555'}) 按 555 无稳态行为模型连接"
+            "（2/3-1/3 VCC 施密特阈值 + 开漏放电，DIP8 引脚取自 IR）"
+        )
 
     def _emit_sensor(self, comp: Dict[str, Any]) -> None:
         nd = self._nodes(comp)
@@ -331,15 +426,26 @@ _TRAN_TSTEP_US = 20.0   # suggested step
 _TRAN_TSTOP_MS = 20.0   # simulated window after power-on
 _TRAN_RAMP_MS = 1.0     # supply ramp 0V -> full in this time
 _MAX_POINTS = 800       # payload thinning for the JSON API
+# a timer IC oscillates far slower than RC edges: widen the window to ~2
+# periods of a 1 Hz-class blinker instead of millisecond-settling transients
+_TRAN_TIMER_TSTOP_MS = 2200.0
+_TRAN_TIMER_TSTEP_US = 2000.0
 
 
-def _transient_deck(builder: _Builder, rsense: Optional[float]) -> Tuple[str, List[str]]:
+def _transient_deck(
+    builder: _Builder,
+    rsense: Optional[float],
+    tstop_ms: float = _TRAN_TSTOP_MS,
+    tstep_us: float = _TRAN_TSTEP_US,
+) -> Tuple[str, List[str]]:
     """Power-on transient deck: supplies ramp 0->V, cap currents settle."""
     vecs = [f"v({n})" for n in builder.nodes[:8]]
     for a in builder.actuators:
         vecs.append(a["element"])
     for src in builder.sources:
-        vecs.append(f"@{src.lower()}[i]")
+        # voltage-source branch currents are native time vectors; @src[i]
+        # device vectors freeze in transient wrdata output
+        vecs.append(f"i({src.lower()})")
     lines = ["* power-on transient (auto-generated)"]
     lines.append(_MODELS)
     if builder.sensor is not None:
@@ -355,7 +461,7 @@ def _transient_deck(builder: _Builder, rsense: Optional[float]) -> Tuple[str, Li
             lines.append(ln)
     lines += [
         "", ".control", "set noaskquit",
-        f"tran {_fmt(_TRAN_TSTEP_US / 1e6)} {_fmt(_TRAN_TSTOP_MS / 1000)}",
+        f"tran {_fmt(tstep_us / 1e6)} {_fmt(tstop_ms / 1000)}",
         "wrdata tran.dat " + " ".join(vecs),
         ".endc", ".end",
     ]
@@ -542,10 +648,14 @@ def run_transient(ir: Dict[str, Any]) -> Dict[str, Any]:
             "未找到 ngspice。请安装到项目 Spice64/bin（见 NGSPICE_INSTALL.md）或加入 PATH"
         )
 
-    builder = _Builder(ir)
+    builder = _Builder(ir, transient=True)
     builder.build()
     if not builder.lines:
         raise ValueError("没有可建模的元件")
+    if builder.has_timer:
+        tstop_ms, tstep_us = _TRAN_TIMER_TSTOP_MS, _TRAN_TIMER_TSTEP_US
+    else:
+        tstop_ms, tstep_us = _TRAN_TSTOP_MS, _TRAN_TSTEP_US
 
     if builder.sensor is not None:
         k = _SWEEP[len(_SWEEP) // 2]
@@ -563,7 +673,7 @@ def run_transient(ir: Dict[str, Any]) -> Dict[str, Any]:
         scenario_label = "上电（标称工况）"
 
     with tempfile.TemporaryDirectory(prefix="cirgpt_tran_") as workdir:
-        deck, vecs = _transient_deck(builder, rsense)
+        deck, vecs = _transient_deck(builder, rsense, tstop_ms, tstep_us)
         time_axis, series = _run_ngspice_tran(ngspice, deck, workdir, len(vecs))
 
     node_count = min(len(builder.nodes), 8)

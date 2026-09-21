@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 # builds hangs on "--version" (no console), so probing it always times out.
 _NGSPICE_CANDIDATES = ["ngspice_con", "ngspice", "ngspice-64", "ngspice64"]
 # Project-local install (START.bat puts it on PATH; probe it directly so the
-# service finds it even when launched without that PATH).
-_REPO_SPICE64 = Path(__file__).resolve().parents[1] / "Spice64" / "bin"
+# service finds it even when launched without that PATH). simulator.py sits
+# at <repo>/eda_tools/pyspice/, so the repo root is two levels up.
+_REPO_SPICE64 = Path(__file__).resolve().parents[2] / "Spice64" / "bin"
 
 
 def _local_ngspice() -> Optional[str]:
@@ -104,16 +105,25 @@ def _parse_rawspice(raw_text: str) -> Dict[str, Any]:
     Returns dict with keys: time, voltages, currents.
 
     ngspice batch ASCII tables are "Index <tab> time <tab> values...";
-    the index column is skipped so the time axis is real seconds.
+    the index column is skipped so the time axis is real seconds. The table
+    header (v(out), i(v1), ...) names each column; without one the columns
+    fall back to node_1, node_2, ...
     """
     time_vals: List[float] = []
     node_data: Dict[str, List[float]] = {}
+    header: List[str] = []
 
     for line in raw_text.splitlines():
         line = line.strip()
         if not line or line.startswith("*") or line.startswith("."):
             continue
         parts = line.split()
+        is_header = parts[0].lower() == "index" or any(
+            re.match(r"^(v|i)\(.+\)$", p, re.I) or p.startswith("@") for p in parts
+        )
+        if is_header:
+            header = parts[2:]  # drop "Index" and the time column
+            continue
         if len(parts) < 3:  # index + time + at least one value
             continue
         try:
@@ -125,6 +135,12 @@ def _parse_rawspice(raw_text: str) -> Dict[str, Any]:
             time_vals.append(t)
             for i, v in enumerate(vals[2:], start=1):
                 key = f"node_{i}"
+                if i <= len(header):
+                    m = re.match(r"^(v|i)\((.+)\)$", header[i - 1], re.I)
+                    if m:
+                        key = m.group(2) if m.group(1).lower() == "v" else f"i_{m.group(2)}"
+                    else:
+                        key = re.sub(r"[^A-Za-z0-9_]", "_", header[i - 1].lower())
                 node_data.setdefault(key, []).append(v)
 
     voltages = {k: v for k, v in node_data.items() if not k.startswith("i_")}
