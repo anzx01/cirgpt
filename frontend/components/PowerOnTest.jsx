@@ -72,13 +72,14 @@ export default function PowerOnTest({ designId, hasIr }) {
     }
   };
 
-  // "未参与直流测试" marks actuators whose driver was excluded from the DC
-  // scan (e.g. a 555 that is only modeled in the transient run) — a neutral
-  // "not assessable here", not a drive-chain failure.
-  const NEUTRAL_TAG = '未参与直流测试';
-  const respOk = (a) => a.response.includes('正确切换') || a.response.includes(NEUTRAL_TAG);
-  const allOk = result?.actuator_response?.every?.(respOk);
-  const anyNeutral = result?.actuator_response?.some?.((a) => a.response.includes(NEUTRAL_TAG));
+  // Verdict classes: 正确切换 (DC sweep) and 周期动作 (transient recheck of
+  // timer-driven actuators) are successes; 无法判定 / 短暂动作 / 未参与 mark
+  // actuators the DC scan cannot assess (driver excluded from the deck) —
+  // neutral, not a drive-chain failure; anything else is a real warning.
+  const isSuccess = (a) => /正确切换|周期动作/.test(a.response);
+  const isNeutral = (a) => /无法判定|短暂动作|未参与/.test(a.response);
+  const allOk = result?.actuator_response?.every?.((a) => isSuccess(a) || isNeutral(a));
+  const anyNeutral = result?.actuator_response?.some?.(isNeutral);
 
   return (
     <Box sx={{ px: 3 }}>
@@ -114,10 +115,19 @@ export default function PowerOnTest({ designId, hasIr }) {
               ? ' 未检测到执行器（电机/LED 等）。'
               : allOk
                 ? (anyNeutral
-                    ? ' 部分执行器的驱动源未参与直流工况，判定以瞬态仿真为准。'
-                    : ' 所有执行器均随输入条件正确切换 ✓')
+                    ? ' 可判定的执行器均正常动作，其余无法自动判定（见明细）。'
+                    : ' 所有执行器均正常动作 ✓')
                 : ' 部分执行器未按预期切换，请看下方明细。'}
           </Alert>
+
+          {result.transient?.performed && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              已自动补跑上电瞬态仿真（窗口 {Math.round(result.transient.tstop_ms)} ms）：
+              {Object.entries(result.transient.actuators).map(([ref, s]) => (
+                <span key={ref}> {ref} 导通占比 {(s.on_fraction * 100).toFixed(0)}%，翻转 {s.transitions} 次；</span>
+              ))}
+            </Alert>
+          )}
 
           {result.actuator_response.length > 0 && (
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
@@ -125,7 +135,7 @@ export default function PowerOnTest({ designId, hasIr }) {
                 <Chip
                   key={a.ref}
                   size="small"
-                  color={a.response.includes('正确切换') ? 'success' : (a.response.includes(NEUTRAL_TAG) ? 'default' : 'warning')}
+                  color={isSuccess(a) ? 'success' : (isNeutral(a) ? 'default' : 'warning')}
                   variant="outlined"
                   label={`${a.ref}（${TYPE_LABELS[a.type] || a.type}）：${a.response}`}
                 />

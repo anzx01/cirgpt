@@ -479,6 +479,87 @@ def _driver_excluded(
     return "、".join(blocked) if blocked else None
 
 
+def _classify_transient(flags: List[bool], duration: float) -> Dict[str, Any]:
+    """Verdict one actuator's on/off series over the transient window.
+
+    Three or more edge crossings mean the actuator repeats (555-class
+    blinker); a single on-pulse is a one-shot, not a period.
+    """
+    transitions = sum(1 for x, y in zip(flags, flags[1:]) if x != y)
+    cycles = transitions // 2
+    freq_hz = (cycles / duration) if duration > 0 and cycles else 0.0
+    on_fraction = (sum(flags) / len(flags)) if flags else 0.0
+    entry = {
+        "on_fraction": round(on_fraction, 4),
+        "transitions": transitions,
+        "freq_hz": round(freq_hz, 3),
+    }
+    if transitions >= 3:
+        extra = f"约{freq_hz:.2f}Hz 闪烁" if freq_hz >= 0.01 else "交替动作"
+        entry["verdict"] = f"瞬态上电后周期动作（{extra}）"
+    elif on_fraction >= 0.95:
+        entry["verdict"] = "瞬态上电后持续动作（未随时间切换，请检查设计意图）"
+    elif on_fraction > 0:
+        entry["verdict"] = "瞬态上电后短暂动作后停止"
+    else:
+        entry["verdict"] = "瞬态上电后仍未动作（请检查驱动链路）"
+    return entry
+
+
+def _ref_transient_modelable(ir: Dict[str, Any], refs: List[str]) -> bool:
+    """True when every blocking ref is a component the transient deck models."""
+    refset = set(refs)
+    types = {
+        str(c.get("type") or "").lower()
+        for c in ir.get("components") or []
+        if isinstance(c, dict) and str(c.get("ref")) in refset
+    }
+    return bool(types) and types <= _TIMER_TYPES
+
+
+def _transient_recheck(
+    ir: Dict[str, Any], ngspice: str
+) -> Optional[Dict[str, Any]]:
+    """Power-on transient pass to verdict actuators the DC scan can't drive.
+
+    Runs the same deck run_transient builds (supplies ramp 0->V, timer ICs
+    modeled behaviorally) and classifies every actuator's current over time:
+    a 555-driven LED should show periodic on/off swings. Returns None (and
+    logs) when the transient run itself fails; callers then keep the neutral
+    "refer to the transient tab" wording.
+    """
+    try:
+        builder = _Builder(ir, transient=True)
+        builder.build()
+        if not builder.lines:
+            return None
+        if builder.sensor is not None:
+            rsense = _SWEEP[len(_SWEEP) // 2] * 1000.0
+        else:
+            rsense = None
+        if builder.has_timer:
+            tstop_ms, tstep_us = _TRAN_TIMER_TSTOP_MS, _TRAN_TIMER_TSTEP_US
+        else:
+            tstop_ms, tstep_us = _TRAN_TSTOP_MS, _TRAN_TSTEP_US
+        with tempfile.TemporaryDirectory(prefix="cirgpt_recheck_") as workdir:
+            deck, vecs = _transient_deck(builder, rsense, tstop_ms, tstep_us)
+            time_axis, series = _run_ngspice_tran(ngspice, deck, workdir, len(vecs))
+    except Exception as exc:  # the DC result must survive a broken transient
+        logger.warning("power-on transient recheck failed: %s", exc)
+        return None
+
+    node_count = len(_live_nodes(builder, 8))
+    duration = (time_axis[-1] - time_axis[0]) if len(time_axis) > 1 else 0.0
+    stats: Dict[str, Dict[str, Any]] = {}
+    for j, a in enumerate(builder.actuators):
+        idx = node_count + j
+        cur = series[idx] if idx < len(series) else []
+        threshold = _LED_ON_A if a["kind"] == "led" else _LOAD_ON_A
+        flags = [abs(v) > threshold for v in cur]
+        stats[str(a["ref"])] = _classify_transient(flags, duration)
+    return {"performed": True, "tstop_ms": tstop_ms, "actuators": stats}
+
+
 def _deck_for(builder: _Builder, rsense: Optional[float]) -> Tuple[str, List[str]]:
     """One ngspice deck (op point) + the wrdata vector list."""
     vecs = [f"v({n})" for n in _live_nodes(builder, 12)]
@@ -674,6 +755,7 @@ def run_power_on(ir: Dict[str, Any]) -> Dict[str, Any]:
 
     # actuator response across scenarios
     response = []
+    pending_transient: Dict[int, List[str]] = {}  # index -> blocking refs
     for j, a in enumerate(builder.actuators):
         states = [r["actuators"][j]["on"] for r in results if j < len(r["actuators"])]
         if any(states) and not all(states):
@@ -687,10 +769,35 @@ def run_power_on(ir: Dict[str, Any]) -> Dict[str, Any]:
                 else None
             )
             if blocked:
-                resp = f"直流工况无法判定（驱动源 {blocked} 未参与直流测试，请以瞬态仿真为准）"
+                refs = blocked.split("、")
+                if _ref_transient_modelable(ir, refs):
+                    # the transient deck models this driver (555-class):
+                    # re-check below for a real action verdict
+                    pending_transient[j] = refs
+                    resp = None
+                else:
+                    resp = f"直流工况无法判定（驱动源 {blocked} 未参与建模，无法自动判定）"
             else:
                 resp = "始终未动作（请检查驱动链路）"
         response.append({"ref": a["ref"], "type": a["type"], "response": resp})
+
+    # Actuators whose drivers only exist in the transient model: run one
+    # power-on transient and verdict them from real current waveforms.
+    transient_info: Optional[Dict[str, Any]] = None
+    if pending_transient:
+        recheck = _transient_recheck(ir, ngspice)
+        if recheck is not None:
+            transient_info = recheck
+            for j in pending_transient:
+                ref = str(builder.actuators[j]["ref"])
+                entry = recheck["actuators"].get(ref)
+                if entry:
+                    response[j]["response"] = entry["verdict"]
+        for j in pending_transient:
+            if response[j]["response"] is None:
+                response[j]["response"] = (
+                    "直流工况无法判定（驱动源未参与直流测试，请以瞬态仿真为准）"
+                )
 
     try:
         ver_out = subprocess.run(
@@ -710,6 +817,7 @@ def run_power_on(ir: Dict[str, Any]) -> Dict[str, Any]:
         "assumptions": builder.assumptions or ["所有元件按 IR 原值建模"],
         "skipped": builder.skipped,
         "sensor": builder.sensor,
+        "transient": transient_info,
     }
 
 

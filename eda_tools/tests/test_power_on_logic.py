@@ -7,7 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from power_on import _driver_excluded  # noqa: E402
+from power_on import (  # noqa: E402
+    _classify_transient,
+    _driver_excluded,
+    _ref_transient_modelable,
+)
 
 # 555 blinker shape: the LED hangs off the timer's OUT net through R3.
 BLINKER = {
@@ -78,6 +82,38 @@ def test_all_passive_chain_with_no_driver_is_not_excluded_fault():
     }
     act = {"ref": "D1", "type": "led", "nodes": ["N1", "0"]}
     assert _driver_excluded(ir, act, set()) is None
+
+
+def test_transient_modelable_requires_timer_types():
+    ir = {
+        "components": [
+            {"ref": "U1", "type": "ne555", "nodes": []},
+            {"ref": "U9", "type": "mcu", "nodes": []},
+            {"ref": "U2", "type": "comparator", "nodes": []},
+        ],
+    }
+    assert _ref_transient_modelable(ir, ["U1"]) is True
+    assert _ref_transient_modelable(ir, ["U9"]) is False
+    assert _ref_transient_modelable(ir, ["U1", "U9"]) is False
+    assert _ref_transient_modelable(ir, ["MISSING"]) is False
+
+
+def test_classify_blinking_led():
+    flags = [False] * 2 + [True] * 3 + [False] * 3 + [True] * 3 + [False] * 3
+    e = _classify_transient(flags, 2.0)
+    assert e["verdict"].startswith("瞬态上电后周期动作"), e
+    assert "1.00Hz" in e["verdict"], e  # 2 full on/off cycles over the 2s window
+
+
+def test_classify_single_pulse_is_not_periodic():
+    flags = [False] * 4 + [True] * 4 + [False] * 8
+    e = _classify_transient(flags, 2.0)
+    assert e["verdict"] == "瞬态上电后短暂动作后停止", e
+
+
+def test_classify_steady_and_dead():
+    assert _classify_transient([True] * 10, 2.0)["verdict"].startswith("瞬态上电后持续动作")
+    assert _classify_transient([False] * 10, 2.0)["verdict"].startswith("瞬态上电后仍未动作")
 
 
 def main() -> int:
