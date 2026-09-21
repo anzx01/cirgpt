@@ -438,7 +438,7 @@ export default function DesignResultPage() {
           <Tab
             icon={<SimulationIcon />}
             label="仿真"
-            disabled={isProcessing || !design?.simulation_results}
+            disabled={isProcessing || !(design?.simulation_results || design?.circuit_ir)}
           />
           <Tab
             icon={<PcbIcon />}
@@ -467,7 +467,7 @@ export default function DesignResultPage() {
         </TabPanel>
 
         <TabPanel value={tabValue} index={1}>
-          <SimulationViewer results={design?.simulation_results} />
+          <SimulationViewer results={design?.simulation_results} designId={designId} />
         </TabPanel>
 
         <TabPanel value={tabValue} index={2}>

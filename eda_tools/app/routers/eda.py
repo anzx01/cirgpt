@@ -20,7 +20,7 @@ from pyspice.simulator import simulate_circuit
 from kicad.pcb_generator import generate_pcb
 from bom.bom_generator import generate_bom
 from circuit_ir import generate_kicad_pcb_preview, generate_spice_netlist
-from power_on import run_power_on
+from power_on import run_power_on, run_transient
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,9 @@ class NetlistRequest(BaseModel):
 class SimulationRequest(BaseModel):
     """Request for circuit simulation"""
     netlist: str
+    # Connectivity netlists carry no SPICE models; with the CircuitIR the
+    # service can build an engineering-model transient instead.
+    circuit_ir: Optional[Dict[str, Any]] = None
 
 
 class PowerOnRequest(BaseModel):
@@ -303,6 +306,16 @@ async def simulate_circuit_endpoint(request: SimulationRequest) -> Dict[str, Any
         logger.info("Running circuit simulation")
 
         if "CIRGPT_SIMULATION: not_available" in request.netlist:
+            ir = request.circuit_ir or {}
+            if ir.get("supported"):
+                try:
+                    results = run_transient(ir)
+                    return {"success": True, "results": results}
+                except Exception as exc:
+                    logger.warning(f"IR transient simulation failed: {exc}")
+                    message = f"IR 瞬态仿真失败: {exc}"
+            else:
+                message = "Simulation is not available for generic natural-language circuit drafts."
             return {
                 "success": True,
                 "results": {
@@ -314,7 +327,7 @@ async def simulate_circuit_endpoint(request: SimulationRequest) -> Dict[str, Any
                     "simulation_time": 0,
                     "nodes": [],
                     "degraded": True,
-                    "message": "Simulation is not available for generic natural-language circuit drafts.",
+                    "message": message,
                     "summary": {},
                 },
             }

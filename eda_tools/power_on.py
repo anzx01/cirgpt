@@ -327,6 +327,85 @@ def _deck_for(builder: _Builder, rsense: Optional[float]) -> Tuple[str, List[str
     return "\n".join(lines) + "\n", vecs
 
 
+_TRAN_TSTEP_US = 20.0   # suggested step
+_TRAN_TSTOP_MS = 20.0   # simulated window after power-on
+_TRAN_RAMP_MS = 1.0     # supply ramp 0V -> full in this time
+_MAX_POINTS = 800       # payload thinning for the JSON API
+
+
+def _transient_deck(builder: _Builder, rsense: Optional[float]) -> Tuple[str, List[str]]:
+    """Power-on transient deck: supplies ramp 0->V, cap currents settle."""
+    vecs = [f"v({n})" for n in builder.nodes[:8]]
+    for a in builder.actuators:
+        vecs.append(a["element"])
+    for src in builder.sources:
+        vecs.append(f"@{src.lower()}[i]")
+    lines = ["* power-on transient (auto-generated)"]
+    lines.append(_MODELS)
+    if builder.sensor is not None:
+        lines.append(f".param RSENSE={_fmt(rsense or 100000)}")
+    for ln in builder.lines:
+        m = re.match(r"^(V\S+)\s+(\S+)\s+(\S+)\s+DC\s+(\S+)$", ln)
+        if m:
+            lines.append(
+                f"{m.group(1)} {m.group(2)} {m.group(3)} "
+                f"PWL(0 0 {_fmt(_TRAN_RAMP_MS / 1000)} {m.group(4)})"
+            )
+        else:
+            lines.append(ln)
+    lines += [
+        "", ".control", "set noaskquit",
+        f"tran {_fmt(_TRAN_TSTEP_US / 1e6)} {_fmt(_TRAN_TSTOP_MS / 1000)}",
+        "wrdata tran.dat " + " ".join(vecs),
+        ".endc", ".end",
+    ]
+    return "\n".join(lines) + "\n", vecs
+
+
+def _run_ngspice_tran(
+    ngspice: str, deck: str, workdir: str, nvec: int
+) -> Tuple[List[float], List[List[float]]]:
+    """Run one transient deck; parse wrdata rows into (time, per-vector series).
+
+    wrdata writes row-major: one row per time point, every vector owning a
+    (scale, value) token pair - scales repeat per vector (verified against
+    ngspice 41 batch output).
+    """
+    deck_path = os.path.join(workdir, "tran.cir")
+    result_path = os.path.join(workdir, "tran.dat")
+    if os.path.exists(result_path):
+        os.remove(result_path)
+    with open(deck_path, "w", encoding="utf-8") as fh:
+        fh.write(deck)
+    proc = subprocess.run(
+        [ngspice, "-b", deck_path],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=90, cwd=workdir,
+    )
+    if not os.path.exists(result_path):
+        raise RuntimeError(
+            "ngspice 未产出瞬态结果: " + (proc.stderr or proc.stdout or "")[-400:]
+        )
+    tokens = open(result_path, encoding="utf-8", errors="replace").read().split()
+    row = 2 * nvec
+    if not tokens or len(tokens) % row:
+        raise RuntimeError(f"wrdata 输出长度异常（{len(tokens)} tokens / {nvec} 向量）")
+    time_axis: List[float] = []
+    series: List[List[float]] = [[] for _ in range(nvec)]
+    for i in range(0, len(tokens), row):
+        chunk = tokens[i:i + row]
+        time_axis.append(float(chunk[0]))
+        for j in range(nvec):
+            series[j].append(float(chunk[2 * j + 1]))
+    # thin to a JSON-friendly point count, keeping first/last
+    if len(time_axis) > _MAX_POINTS:
+        step = len(time_axis) / _MAX_POINTS
+        keep = sorted({int(i * step) for i in range(_MAX_POINTS)} | {len(time_axis) - 1})
+        time_axis = [time_axis[i] for i in keep]
+        series = [[s[i] for i in keep] for s in series]
+    return time_axis, series
+
+
 def _run_ngspice(ngspice: str, deck: str, workdir: str) -> List[float]:
     deck_path = os.path.join(workdir, "deck.cir")
     result_path = os.path.join(workdir, "poweron.dat")
@@ -443,4 +522,103 @@ def run_power_on(ir: Dict[str, Any]) -> Dict[str, Any]:
         "assumptions": builder.assumptions or ["所有元件按 IR 原值建模"],
         "skipped": builder.skipped,
         "sensor": builder.sensor,
+    }
+
+
+def run_transient(ir: Dict[str, Any]) -> Dict[str, Any]:
+    """Power-on transient from CircuitIR: supplies ramp 0->V, waveforms back.
+
+    Output matches the EDA simulation result schema (time / voltages /
+    currents / summary) so the generic SimulationViewer can render it; the
+    representative input scenario is the middle of the sensor sweep (for a
+    soil sensor that is the "dry, actuator running" side).
+    """
+    if not ir or not ir.get("supported", False):
+        raise ValueError("该设计的 CircuitIR 不受支持，无法仿真")
+
+    ngspice = find_ngspice()
+    if not ngspice:
+        raise RuntimeError(
+            "未找到 ngspice。请安装到项目 Spice64/bin（见 NGSPICE_INSTALL.md）或加入 PATH"
+        )
+
+    builder = _Builder(ir)
+    builder.build()
+    if not builder.lines:
+        raise ValueError("没有可建模的元件")
+
+    if builder.sensor is not None:
+        k = _SWEEP[len(_SWEEP) // 2]
+        rsense = k * 1000.0
+        labels = builder.sensor.get("labels")
+        if labels:
+            low_label, high_label = labels
+            # same wet/dry split as run_power_on's scenario labels
+            cond = low_label if len(_SWEEP) // 2 < len(_SWEEP) / 2 else high_label
+        else:
+            cond = f"R={k}kΩ"
+        scenario_label = f"{builder.sensor['ref']} {cond}（{k}kΩ）"
+    else:
+        rsense = None
+        scenario_label = "上电（标称工况）"
+
+    with tempfile.TemporaryDirectory(prefix="cirgpt_tran_") as workdir:
+        deck, vecs = _transient_deck(builder, rsense)
+        time_axis, series = _run_ngspice_tran(ngspice, deck, workdir, len(vecs))
+
+    node_count = min(len(builder.nodes), 8)
+    voltages = {
+        node: series[i]
+        for i, node in enumerate(builder.nodes[:node_count])
+        if i < len(series)
+    }
+    currents: Dict[str, List[float]] = {}
+    for j, a in enumerate(builder.actuators):
+        if node_count + j < len(series):
+            currents[str(a["ref"])] = series[node_count + j]
+    supply_idx = [node_count + len(builder.actuators) + k
+                  for k in range(len(builder.sources))]
+    total = [
+        sum(series[i][p] for i in supply_idx if i < len(series))
+        for p in range(len(time_axis))
+    ]
+    currents["total"] = total
+
+    # Viewer-friendly aliases: "output" = the node that swings most (rails and
+    # quiet nodes lose), "input" = the sensor signal node when present.
+    def swing(vals: List[float]) -> float:
+        return (max(vals) - min(vals)) if vals else 0.0
+
+    if voltages and "output" not in voltages:
+        main_node = max(voltages, key=lambda n: swing(voltages[n]))
+        voltages["output"] = voltages[main_node]
+    if builder.sensor_signal_node and builder.sensor_signal_node in voltages:
+        voltages.setdefault("input", voltages[builder.sensor_signal_node])
+
+    out_series = voltages.get("output") or []
+    summary: Dict[str, Any] = {}
+    if out_series:
+        v_max, v_min = max(out_series), min(out_series)
+        summary = {
+            "voltage": {
+                "max": v_max, "min": v_min,
+                "avg": sum(out_series) / len(out_series),
+                "peak_to_peak": v_max - v_min,
+            },
+            "current": {"max": max(total) if total else 0},
+            "estimated_frequency": None,
+        }
+
+    return {
+        "status": "success",
+        "analysis_type": "transient",
+        "scenario": scenario_label,
+        "time": time_axis,
+        "voltages": voltages,
+        "currents": currents,
+        "simulation_time": time_axis[-1] if time_axis else 0,
+        "nodes": list(builder.nodes[:node_count]),
+        "summary": summary,
+        "assumptions": builder.assumptions or ["所有元件按 IR 原值建模"],
+        "skipped": builder.skipped,
     }

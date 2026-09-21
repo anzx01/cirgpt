@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Paper,
@@ -8,8 +8,12 @@ import {
   Grid,
   Card,
   CardContent,
-  Alert
+  Alert,
+  Button,
+  Stack,
+  CircularProgress
 } from '@mui/material';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import {
   LineChart,
   Line,
@@ -20,6 +24,13 @@ import {
   Legend,
   ResponsiveContainer
 } from 'recharts';
+import { API_BASE_URL } from '../config.mjs';
+import { formatUserError } from '../lib/errorUtils';
+
+const SERIES_COLORS = [
+  '#1976d2', '#ff9800', '#4caf50', '#9c27b0',
+  '#f44336', '#00bcd4', '#795548', '#607d8b',
+];
 
 // 数据降采样，避免大数据量导致的性能问题
 function downsampleData(data, maxPoints = 1000) {
@@ -31,50 +42,74 @@ function downsampleData(data, maxPoints = 1000) {
   return data.filter((_, index) => index % step === 0);
 }
 
-export default function SimulationViewer({ results }) {
-  if (!results) {
-    return (
-      <Box sx={{ p: 4, textAlign: 'center' }}>
-        <Alert severity="info">
-          仿真结果尚未生成，请等待设计生成完成。
-        </Alert>
-      </Box>
+export default function SimulationViewer({ results, designId }) {
+  const [data, setData] = useState(results);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setData(results);
+    setError(null);
+  }, [results]);
+
+  const rerun = async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/circuit/${designId}/simulate`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || `请求失败 (${response.status})`);
+      }
+      const payload = await response.json();
+      setData(payload.results || payload);
+    } catch (e) {
+      setError(formatUserError ? formatUserError(e) : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const voltages = data?.voltages || {};
+  const currents = data?.currents || {};
+  const time = data?.time;
+
+  // node series to plot: output/input aliases first, then named nodes (max 6)
+  const nodeKeys = useMemo(() => {
+    const keys = Object.keys(voltages).filter(
+      (k) => Array.isArray(voltages[k]) && voltages[k].length > 0
     );
-  }
+    const priority = (k) => (k === 'output' ? 0 : k === 'input' ? 1 : 2);
+    return keys.sort((a, b) => priority(a) - priority(b)).slice(0, 6);
+  }, [voltages]);
 
-  const { time, voltages, currents, summary } = results;
-
-  // Prepare chart data with downsampling
   const chartData = useMemo(() => {
-    if (!time || !voltages) {
+    if (!time || nodeKeys.length === 0) {
       return [];
     }
-
-    const voltageData = voltages.output || voltages.Vout || [];
-    const inputData = voltages.input || voltages.Vin || [];
     const currentData = currents?.total || [];
-
-    // 检查数据是否为空
-    if (voltageData.length === 0) {
-      return [];
-    }
-
-    const rawData = time.map((t, i) => ({
-      time: Number(t.toFixed(6)),
-      output: voltageData[i] !== undefined ? Number((voltageData[i] || 0).toFixed(3)) : null,
-      input: inputData[i] !== undefined ? Number((inputData[i] || 0).toFixed(3)) : null,
-      current: currentData[i] !== undefined ? Number((currentData[i] * 1000).toFixed(3)) : null // Convert to mA
-    })).filter(point => point.time >= 0 && point.output !== null);
-
-    // 降采样以提高性能
+    const rawData = time.map((t, i) => {
+      const point = { time: Number(Number(t).toFixed(6)) };
+      for (const k of nodeKeys) {
+        const v = voltages[k][i];
+        point[k] = v !== undefined ? Number(Number(v || 0).toFixed(3)) : null;
+      }
+      point.current =
+        currentData[i] !== undefined
+          ? Number((currentData[i] * 1000).toFixed(3)) // A -> mA
+          : null;
+      return point;
+    }).filter((point) => point.time >= 0 && point[nodeKeys[0]] !== null);
     return downsampleData(rawData, 1000);
-  }, [time, voltages, currents]);
+  }, [time, nodeKeys, voltages, currents]);
 
-  // Calculate statistics
   const stats = useMemo(() => {
-    if (!chartData || chartData.length === 0) return null;
-
-    const outputVoltages = chartData.map(d => d.output).filter(v => v !== null);
+    if (chartData.length === 0) return null;
+    const outputVoltages = chartData
+      .map((d) => (nodeKeys.includes('output') ? d.output : d[nodeKeys[0]]))
+      .filter((v) => v !== null && v !== undefined);
     if (outputVoltages.length === 0) return null;
 
     const vMax = Math.max(...outputVoltages);
@@ -86,31 +121,75 @@ export default function SimulationViewer({ results }) {
       vMin: vMin.toFixed(2),
       vAvg: vAvg.toFixed(2),
       vPeakToPeak: (vMax - vMin).toFixed(2),
-      frequency: summary?.estimated_frequency?.toFixed(2) || 'N/A'
+      frequency:
+        data?.summary?.estimated_frequency != null
+          ? data.summary.estimated_frequency.toFixed(2)
+          : 'N/A'
     };
-  }, [chartData, summary]);
+  }, [chartData, nodeKeys, data]);
 
-  // 数据为空的情况
-  if (!chartData || chartData.length === 0) {
+  const degraded = data?.degraded || chartData.length === 0;
+  const hasCurrent = chartData.some((d) => d.current !== null);
+
+  const header = (
+    <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
+      <Typography variant="h6" fontWeight="bold" sx={{ flex: 1 }}>
+        电路仿真结果
+      </Typography>
+      {data?.scenario && (
+        <Typography variant="caption" color="text.secondary">
+          工况：{data.scenario}
+        </Typography>
+      )}
+      {designId && (
+        <Button
+          variant="contained"
+          size="small"
+          color="primary"
+          startIcon={running ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
+          onClick={rerun}
+          disabled={running}
+        >
+          {running ? '仿真中…' : '重新仿真'}
+        </Button>
+      )}
+    </Stack>
+  );
+
+  if (!data) {
     return (
-      <Box sx={{ p: 4 }}>
-        <Alert severity="warning">
-          仿真数据为空或格式不正确，无法显示波形图。请检查电路设计或重新生成。
+      <Box sx={{ p: 4, textAlign: 'center' }}>
+        <Alert severity="info">
+          仿真结果尚未生成，请等待设计生成完成。
         </Alert>
       </Box>
     );
   }
 
-  // 检查是否有输入电压和电流数据
-  const hasInputVoltage = chartData.some(d => d.input !== null);
-  const hasCurrent = chartData.some(d => d.current !== null);
+  if (degraded) {
+    return (
+      <Box sx={{ px: 3 }}>
+        {header}
+        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+        <Alert severity="warning">
+          {data?.message || '仿真数据为空或格式不正确。'}
+          {designId
+            ? ' 连接性网表会用 CircuitIR 工程模型做上电瞬态仿真，点击右上角「重新仿真」生成波形。'
+            : ''}
+        </Alert>
+        {data?.assumptions?.length > 0 && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+            建模假设：{data.assumptions.join('；')}
+          </Typography>
+        )}
+      </Box>
+    );
+  }
 
   return (
     <Box>
-      {/* Header */}
-      <Typography variant="h6" fontWeight="bold" gutterBottom>
-        电路仿真结果
-      </Typography>
+      {header}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {chartData.length < (time?.length || 0) && (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -184,7 +263,7 @@ export default function SimulationViewer({ results }) {
         </Grid>
       )}
 
-      {/* Waveform Chart */}
+      {/* Voltage Waveform: one line per node (output/input aliases first) */}
       <Paper elevation={1} sx={{ p: 2, mb: 2 }}>
         <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
           电压波形
@@ -201,26 +280,18 @@ export default function SimulationViewer({ results }) {
             />
             <Tooltip />
             <Legend />
-            <Line
-              type="monotone"
-              dataKey="output"
-              stroke="#1976d2"
-              strokeWidth={2}
-              name="输出电压"
-              dot={false}
-              connectNulls
-            />
-            {hasInputVoltage && (
+            {nodeKeys.map((k, i) => (
               <Line
+                key={k}
                 type="monotone"
-                dataKey="input"
-                stroke="#ff9800"
-                strokeWidth={2}
-                name="输入电压"
+                dataKey={k}
+                stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                strokeWidth={k === 'output' || k === 'input' ? 2 : 1.5}
+                name={`V(${k})`}
                 dot={false}
                 connectNulls
               />
-            )}
+            ))}
           </LineChart>
         </ResponsiveContainer>
       </Paper>
@@ -248,7 +319,7 @@ export default function SimulationViewer({ results }) {
                 dataKey="current"
                 stroke="#4caf50"
                 strokeWidth={2}
-                name="电流"
+                name="电源电流"
                 dot={false}
                 connectNulls
               />
@@ -257,13 +328,19 @@ export default function SimulationViewer({ results }) {
         </Paper>
       )}
 
+      {data?.assumptions?.length > 0 && (
+        <Typography variant="caption" color="text.secondary">
+          建模假设：{data.assumptions.join('；')}
+        </Typography>
+      )}
+
       {/* Analysis Type */}
-      {results.analysis_type && (
+      {data.analysis_type && (
         <Alert severity="info" sx={{ mt: 2 }}>
-          分析类型: <strong>{results.analysis_type}</strong>
-          {results.simulation_time && (
-            <> | 仿真时间: <strong>{results.simulation_time}s</strong></>
-          )}
+          分析类型: <strong>{data.analysis_type}</strong>
+          {data.simulation_time ? (
+            <> | 仿真时间: <strong>{Number(data.simulation_time * 1000).toFixed(1)}ms</strong></>
+          ) : null}
         </Alert>
       )}
     </Box>

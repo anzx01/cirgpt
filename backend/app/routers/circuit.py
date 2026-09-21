@@ -173,6 +173,31 @@ async def power_on_circuit(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.post("/{design_id}/simulate", summary="Re-run circuit simulation")
+async def simulate_circuit(
+    design_id: int,
+    service: CircuitService = Depends(get_circuit_service)
+):
+    """
+    Re-run the simulation for a stored design (connectivity netlists are
+    simulated from their CircuitIR with engineering models) and persist the
+    result.
+    """
+    design = await service.get_design(design_id)
+    if not design:
+        raise HTTPException(status_code=404, detail="Circuit design not found")
+    if not design.netlist:
+        raise HTTPException(status_code=400, detail="该设计还没有网表，请先生成设计")
+
+    try:
+        return await service.rerun_simulation(design_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Simulation re-run failed for design {design_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/{design_id}/status", response_model=DesignStatus, summary="Get generation status")
 async def get_circuit_status(
     design_id: int,

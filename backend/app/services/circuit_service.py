@@ -183,7 +183,7 @@ class CircuitService:
             # Step 4: Run simulation
             await self._update_progress(progress_callback, design_id,
                                        "Running circuit simulation", 70)
-            simulation_result = await self._simulate_circuit(netlist)
+            simulation_result = await self._simulate_circuit(netlist, circuit_ir)
 
             # Step 5: Generate PCB
             await self._update_progress(progress_callback, design_id,
@@ -360,12 +360,16 @@ class CircuitService:
 
         return response.json()
 
-    async def _simulate_circuit(self, netlist: str) -> Dict[str, Any]:
+    async def _simulate_circuit(
+        self, netlist: str, circuit_ir: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
         Simulate circuit using EDA service
 
         Args:
             netlist: SPICE netlist
+            circuit_ir: CircuitIR; lets the EDA service build an engineering
+                model transient when the netlist is connectivity-only
 
         Returns:
             Simulation results
@@ -375,13 +379,30 @@ class CircuitService:
         http_client = get_http_client()
         response = await http_client.post(
             f"{self.eda_service_url}/eda/simulation",
-            json={"netlist": netlist}
+            json={"netlist": netlist, "circuit_ir": circuit_ir}
         )
 
         if response.status_code != 200:
             raise Exception(f"EDA service error: {response.status_code}")
 
         return response.json()
+
+    async def rerun_simulation(self, design_id: int) -> Dict[str, Any]:
+        """Re-run simulation for a stored design and persist the result."""
+        design = await self.get_design(design_id)
+        if not design:
+            raise ValueError(f"Design {design_id} not found")
+        if not design.netlist:
+            raise ValueError("该设计没有网表，请先生成设计")
+
+        simulation_result = await self._simulate_circuit(
+            design.netlist, design.circuit_ir
+        )
+        design.simulation_results = simulation_result.get("results")
+        design.simulation_status = simulation_result.get("results", {}).get("status")
+        self.db.commit()
+        self.db.refresh(design)
+        return simulation_result
 
     async def _generate_pcb(self, netlist: str, circuit_ir: Dict[str, Any]) -> Dict[str, Any]:
         """
