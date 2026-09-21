@@ -24,7 +24,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,8 @@ class _Builder:
         self.lines: List[str] = []
         self.assumptions: List[str] = []
         self.skipped: List[str] = []
-        self.actuators: List[Dict[str, Any]] = []  # {ref,type,element,kind}
+        self.skipped_refs: Set[str] = set()  # refs behind self.skipped entries
+        self.actuators: List[Dict[str, Any]] = []  # {ref,type,element,kind,nodes}
         self.sources: List[str] = []
         self.nodes: List[str] = []          # measurement nodes (safe names)
         self.sensor: Optional[Dict[str, Any]] = None
@@ -188,6 +189,7 @@ class _Builder:
             except Exception as exc:  # a single odd component must not kill the test
                 logger.warning("power-on: failed to model %s: %s", comp.get("ref"), exc)
                 self.skipped.append(f"{comp.get('ref') or comp.get('type')}: {exc}")
+                self.skipped_refs.add(str(comp.get("ref") or ""))
         if not self.sources:
             self.lines.append("V1 VCC 0 DC 12")
             self.sources.append("V1")
@@ -252,7 +254,7 @@ class _Builder:
                     line.append(f"D{ref} {nd[0]} {nd[1]} PW_LED")
                     # ngspice diode current parameter is 'id' (resistors use 'i')
                     element = f"@d{ref.lower()}[id]"
-                self.actuators.append({"ref": comp.get("ref"), "type": "led", "element": element, "kind": "led"})
+                self.actuators.append({"ref": comp.get("ref"), "type": "led", "element": element, "kind": "led", "nodes": [nd[0], nd[1]]})
                 return
             raise ValueError("LED 引脚不足")
 
@@ -325,7 +327,7 @@ class _Builder:
             else:
                 line.append(f"R{ref} {nd[0]} {nd[1]} {_fmt(coil)}")
                 element = f"@r{ref.lower()}[i]"
-            self.actuators.append({"ref": comp.get("ref"), "type": t, "element": element, "kind": "load"})
+            self.actuators.append({"ref": comp.get("ref"), "type": t, "element": element, "kind": "load", "nodes": [nd[0], nd[1]]})
             self.assumptions.append(f"{comp.get('ref')} ({t}) 按 {_fmt(coil)}Ω 阻性线圈建模")
             return
 
@@ -416,6 +418,65 @@ def _live_nodes(builder: _Builder, limit: int) -> List[str]:
     body = "\n" + "\n".join(builder.lines) + " "
     live = [n for n in builder.nodes if re.search(rf"\s{re.escape(n)}\s", body)]
     return live[:limit]
+
+
+# Two-terminal components the driver search walks through; anything else
+# on a net (source, transistor, opamp/comparator, ...) can actively drive it.
+_PASSIVE_TYPES = {
+    "resistor", "res", "capacitor", "cap", "inductor", "ind",
+    "diode", "led", "zener_diode", "switch",
+}
+
+
+def _driver_excluded(
+    ir: Dict[str, Any],
+    act: Dict[str, Any],
+    excluded_refs: Set[str],
+) -> Optional[str]:
+    """Refs of excluded components standing between an actuator and its driver.
+
+    Walks outward from the actuator's non-ground nodes through included
+    passive components. Returns None when an included active component (or a
+    supply) can still drive the actuator in this deck; returns the excluded
+    refs the walk dead-ended on otherwise, so the caller can report a
+    "not assessable here" verdict instead of a drive-chain failure.
+    """
+    members: Dict[str, List[Dict[str, Any]]] = {}
+    for comp in ir.get("components", []) or []:
+        if not isinstance(comp, dict):
+            continue
+        for node in comp.get("nodes") or []:
+            members.setdefault(_safe_node(node), []).append(comp)
+
+    act_ref = str(act.get("ref"))
+    act_comp = next(
+        (c for c in ir.get("components", []) or []
+         if isinstance(c, dict) and str(c.get("ref")) == act_ref),
+        None,
+    )
+    queue = [n for n in (act.get("nodes") or []) if not _is_gnd(n)]
+    seen_nets = set(queue)
+    blocked: List[str] = []
+    while queue:
+        net = queue.pop()
+        for comp in members.get(net, []):
+            if comp is act_comp:
+                continue
+            ref = str(comp.get("ref") or "")
+            t = str(comp.get("type") or "").lower()
+            if ref in excluded_refs:
+                if ref and ref not in blocked:
+                    blocked.append(ref)
+                continue
+            if t in _PASSIVE_TYPES:
+                for node in comp.get("nodes") or []:
+                    s = _safe_node(node)
+                    if s not in seen_nets and not _is_gnd(s):
+                        seen_nets.add(s)
+                        queue.append(s)
+                continue
+            return None  # an included active component can drive this net
+    return "、".join(blocked) if blocked else None
 
 
 def _deck_for(builder: _Builder, rsense: Optional[float]) -> Tuple[str, List[str]]:
@@ -620,7 +681,15 @@ def run_power_on(ir: Dict[str, Any]) -> Dict[str, Any]:
         elif all(states):
             resp = "持续动作（未随输入切换，请检查设计意图）"
         else:
-            resp = "始终未动作（请检查驱动链路）"
+            blocked = (
+                _driver_excluded(ir, a, builder.skipped_refs)
+                if builder.skipped_refs
+                else None
+            )
+            if blocked:
+                resp = f"直流工况无法判定（驱动源 {blocked} 未参与直流测试，请以瞬态仿真为准）"
+            else:
+                resp = "始终未动作（请检查驱动链路）"
         response.append({"ref": a["ref"], "type": a["type"], "response": resp})
 
     try:

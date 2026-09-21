@@ -72,7 +72,13 @@ export default function PowerOnTest({ designId, hasIr }) {
     }
   };
 
-  const allOk = result?.actuator_response?.every?.((a) => a.response.includes('正确切换'));
+  // "未参与直流测试" marks actuators whose driver was excluded from the DC
+  // scan (e.g. a 555 that is only modeled in the transient run) — a neutral
+  // "not assessable here", not a drive-chain failure.
+  const NEUTRAL_TAG = '未参与直流测试';
+  const respOk = (a) => a.response.includes('正确切换') || a.response.includes(NEUTRAL_TAG);
+  const allOk = result?.actuator_response?.every?.(respOk);
+  const anyNeutral = result?.actuator_response?.some?.((a) => a.response.includes(NEUTRAL_TAG));
 
   return (
     <Box sx={{ px: 3 }}>
@@ -102,12 +108,14 @@ export default function PowerOnTest({ designId, hasIr }) {
 
       {result && (
         <>
-          <Alert severity={allOk ? 'success' : 'warning'} sx={{ mb: 2 }}>
+          <Alert severity={allOk ? (anyNeutral ? 'info' : 'success') : 'warning'} sx={{ mb: 2 }}>
             <strong>{result.tool}</strong> 上电完成，共 {result.scenarios.length} 个工况。
             {result.actuator_response.length === 0
               ? ' 未检测到执行器（电机/LED 等）。'
               : allOk
-                ? ' 所有执行器均随输入条件正确切换 ✓'
+                ? (anyNeutral
+                    ? ' 部分执行器的驱动源未参与直流工况，判定以瞬态仿真为准。'
+                    : ' 所有执行器均随输入条件正确切换 ✓')
                 : ' 部分执行器未按预期切换，请看下方明细。'}
           </Alert>
 
@@ -117,7 +125,7 @@ export default function PowerOnTest({ designId, hasIr }) {
                 <Chip
                   key={a.ref}
                   size="small"
-                  color={a.response.includes('正确切换') ? 'success' : 'warning'}
+                  color={a.response.includes('正确切换') ? 'success' : (a.response.includes(NEUTRAL_TAG) ? 'default' : 'warning')}
                   variant="outlined"
                   label={`${a.ref}（${TYPE_LABELS[a.type] || a.type}）：${a.response}`}
                 />
