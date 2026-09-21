@@ -121,3 +121,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+
+# Runtime artifacts of scripts/power_on_test.py (regenerated each run)
+scripts/power_on_deck.cir
+scripts/power_on_result.dat
