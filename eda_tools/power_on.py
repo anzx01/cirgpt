@@ -406,9 +406,21 @@ class _Builder:
 _SWEEP = [5, 15, 25, 35, 45, 60, 80, 110, 150, 200, 300, 400, 500]  # kOhm
 
 
+def _live_nodes(builder: _Builder, limit: int) -> List[str]:
+    """Measurement nodes that actually exist in the emitted deck.
+
+    An IR net whose every member component was skipped (e.g. an MCU-only
+    DIG_IO bus) leaves the node unconnected; asking wrdata for it aborts the
+    whole run with 'no such vector'.
+    """
+    body = "\n" + "\n".join(builder.lines) + " "
+    live = [n for n in builder.nodes if re.search(rf"\s{re.escape(n)}\s", body)]
+    return live[:limit]
+
+
 def _deck_for(builder: _Builder, rsense: Optional[float]) -> Tuple[str, List[str]]:
     """One ngspice deck (op point) + the wrdata vector list."""
-    vecs = [f"v({n})" for n in builder.nodes[:12]]
+    vecs = [f"v({n})" for n in _live_nodes(builder, 12)]
     for a in builder.actuators:
         vecs.append(a["element"])
     lines = ["* power-on test (auto-generated)"]
@@ -439,7 +451,7 @@ def _transient_deck(
     tstep_us: float = _TRAN_TSTEP_US,
 ) -> Tuple[str, List[str]]:
     """Power-on transient deck: supplies ramp 0->V, cap currents settle."""
-    vecs = [f"v({n})" for n in builder.nodes[:8]]
+    vecs = [f"v({n})" for n in _live_nodes(builder, 8)]
     for a in builder.actuators:
         vecs.append(a["element"])
     for src in builder.sources:
@@ -571,8 +583,9 @@ def run_power_on(ir: Dict[str, Any]) -> Dict[str, Any]:
             values = _run_ngspice(ngspice, deck, workdir)
             # split node voltages vs actuator currents
             node_map = {}
-            node_count = min(len(builder.nodes), 12)
-            for i, node in enumerate(builder.nodes[:node_count]):
+            live_nodes = _live_nodes(builder, 12)
+            node_count = len(live_nodes)
+            for i, node in enumerate(live_nodes):
                 node_map[node] = values[i] if i < len(values) else float("nan")
             act_states = []
             for j, a in enumerate(builder.actuators):
@@ -676,10 +689,11 @@ def run_transient(ir: Dict[str, Any]) -> Dict[str, Any]:
         deck, vecs = _transient_deck(builder, rsense, tstop_ms, tstep_us)
         time_axis, series = _run_ngspice_tran(ngspice, deck, workdir, len(vecs))
 
-    node_count = min(len(builder.nodes), 8)
+    live_nodes = _live_nodes(builder, 8)
+    node_count = len(live_nodes)
     voltages = {
         node: series[i]
-        for i, node in enumerate(builder.nodes[:node_count])
+        for i, node in enumerate(live_nodes)
         if i < len(series)
     }
     currents: Dict[str, List[float]] = {}
@@ -727,7 +741,7 @@ def run_transient(ir: Dict[str, Any]) -> Dict[str, Any]:
         "voltages": voltages,
         "currents": currents,
         "simulation_time": time_axis[-1] if time_axis else 0,
-        "nodes": list(builder.nodes[:node_count]),
+        "nodes": live_nodes,
         "summary": summary,
         "assumptions": builder.assumptions or ["所有元件按 IR 原值建模"],
         "skipped": builder.skipped,

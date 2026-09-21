@@ -81,13 +81,27 @@ def _extract_nodes(netlist: str) -> List[str]:
     """Collect node names from two-terminal element lines (heuristic).
 
     Element lines look like ``R1 N1 N2 1k`` / ``V1 N1 0 DC 5`` / ``D1 N1 N2 MODEL``:
-    tokens 1 and 2 are the nodes. Ground ('0') and value/model keywords are skipped.
+    tokens 1 and 2 are the nodes. Ground ('0') and value/model keywords are
+    skipped. Lines inside a .subckt are skipped too: their nodes are local to
+    the macro model and putting them in a top-level .print aborts ngspice
+    ("vector inp is not available") before any data is written.
     """
     nodes: List[str] = []
     seen = set()
+    subckt_depth = 0
     for line in netlist.splitlines():
         s = line.strip()
-        if not s or s[0] in "*+.xX":
+        if not s or s[0] in "*+":
+            continue
+        low = s.lower()
+        if low.startswith(".subckt"):
+            subckt_depth += 1
+            continue
+        if subckt_depth:
+            if low.startswith(".ends"):
+                subckt_depth -= 1
+            continue
+        if s[0] in ".xX":
             continue
         tokens = s.split()
         if not _NODE_TOKEN_RE.match(tokens[0]):
