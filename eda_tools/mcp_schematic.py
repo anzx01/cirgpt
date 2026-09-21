@@ -186,6 +186,8 @@ def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         "power_mosfet",
         "nmos",
         "pmos",
+        "nmosfet",
+        "pmosfet",
         "n_mosfet",
         "p_mosfet",
         "n_channel_mosfet",
@@ -196,15 +198,17 @@ def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         if "PMOS" in (t + vu).upper().replace(" ", "") or "-P" in vu:
             return ("Device", "Q_PMOS")
         return ("Device", "Q_NMOS")
-    if t in {"bjt", "transistor", "transistor_npn"}:
+    if t in {"bjt", "transistor", "transistor_npn", "npn_transistor"}:
         if "PNP" in vu:
             return ("Device", "Q_PNP")
         return ("Device", "Q_NPN")
-    if t == "linear_regulator":
+    if t in {"transistor_pnp", "pnp_transistor"}:
+        return ("Device", "Q_PNP")
+    if t in {"linear_regulator", "voltage_regulator"}:
         return ("Regulator_Linear", "L7805")
-    if t == "timer_ic":
+    if t in {"timer_ic", "timer", "ne555", "555_timer"}:
         return ("Timer", "LM555xN")
-    if t == "opamp":
+    if t in {"opamp", "operational_amplifier", "ideal_opamp"}:
         return ("Amplifier_Operational", "LM358")
     # LM393-style comparator: DIP8 pinout is identical to the LM358 symbol
     # (1=OUT1 2=IN1- 3=IN1+ 4=GND 5=IN2+ 6=IN2- 7=OUT2 8=VCC).
@@ -235,9 +239,15 @@ def _footprint_for(lib: str, sym: str, comp: Dict[str, Any]) -> str:
             return CAP_FP
     if (lib, sym) == ("Device", "LED"):
         return LED_FP
-    if t == "timer_ic":
+    if t in {"timer_ic", "timer", "ne555", "555_timer"}:
         return DIP8_FP
-    if t in {"opamp", "comparator", "comparator_ic"}:
+    if t in {
+        "opamp",
+        "operational_amplifier",
+        "ideal_opamp",
+        "comparator",
+        "comparator_ic",
+    }:
         return DIP8_FP
     if t in {"switch", "button"}:
         return SW_FP
@@ -547,6 +557,12 @@ def _symbol_units_from_lib(
             anchor = re.search(
                 r'\(\s*symbol\s+"' + re.escape(extends_m.group(1)) + r'"', text
             )
+        # Pins carrying unit 0 are common to every unit (LM555xN keeps its
+        # power pins there): they render with unit 1, so fold them in rather
+        # than letting the placer stack a phantom "unit 0" instance.
+        common = units.pop(0, None)
+        if common is not None:
+            units.setdefault(1, set()).update(common)
         if not units:
             units = {1: set()}
         result[lib_id] = units

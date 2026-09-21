@@ -27,6 +27,8 @@ from mcp_schematic import (  # noqa: E402
     _plan_wire_routes,
     _safe_label,
     _segs_conflict,
+    _symbol_for,
+    _symbol_units_from_lib,
 )
 
 SCH = """(kicad_sch (version 20250114)
@@ -201,6 +203,64 @@ def test_wire_route_planning():
     plans2 = _plan_wire_routes(ir_nets + [{"name": "XNET", "connections": ["X1.1"]}],
                                {"R1", "D1", "U1", "X1"}, {}, pin_positions, [50.0])
     assert "N1" not in plans2, plans2.keys()
+
+
+# IR type strings seen in stored designs; each must land on the KiCad symbol
+# it represents, never on the generic Connector fallback (a 555 rendered as
+# an 8-pin header bar instead of an IC box looked "not like a chip").
+_SYMBOL_MAP_CASES = [
+    ({"type": "ne555", "value": "NE555", "nodes": [str(i) for i in range(8)]}, ("Timer", "LM555xN")),
+    ({"type": "555_timer", "value": "NE555", "nodes": [str(i) for i in range(8)]}, ("Timer", "LM555xN")),
+    ({"type": "timer_ic", "value": "NE555", "nodes": [str(i) for i in range(8)]}, ("Timer", "LM555xN")),
+    ({"type": "ideal_opamp", "value": "IDEAL", "nodes": ["a", "b", "c"]}, ("Amplifier_Operational", "LM358")),
+    ({"type": "operational_amplifier", "value": "", "nodes": ["a", "b", "c"]}, ("Amplifier_Operational", "LM358")),
+    ({"type": "npn_transistor", "value": "", "nodes": ["a", "b", "c"]}, ("Device", "Q_NPN")),
+    ({"type": "pnp_transistor", "value": "", "nodes": ["a", "b", "c"]}, ("Device", "Q_PNP")),
+    ({"type": "nmosfet", "value": "", "nodes": ["a", "b", "c"]}, ("Device", "Q_NMOS")),
+    ({"type": "voltage_regulator", "value": "5", "nodes": ["a", "b", "c"]}, ("Regulator_Linear", "L7805")),
+]
+
+
+def test_symbol_type_coverage():
+    for comp, expected in _SYMBOL_MAP_CASES:
+        got = _symbol_for(comp)
+        assert got == expected, f"{comp.get('type')}: {got} != {expected}"
+    # unknown IC-ish types still degrade to the connector fallback
+    comp = {"type": "mystery_module", "value": "MOD", "nodes": ["a", "b", "c", "d"]}
+    assert _symbol_for(comp) == ("Connector_Generic", "Conn_01x04")
+
+
+UNIT0_LIB = """(
+  symbol "Timer:LM555xN"
+  (pin power_in line (at -10.16 0 0) (length 2.54)
+    (name "GND" (effects (font (size 1.27 1.27))))
+    (number "1" (effects (font (size 1.27 1.27))))
+  )
+  (pin power_in line (at 10.16 0 180) (length 2.54)
+    (name "VCC" (effects (font (size 1.27 1.27))))
+    (number "8" (effects (font (size 1.27 1.27))))
+  )
+  (symbol "LM555xN_1_1"
+    (pin input line (at -10.16 5.08 0) (length 2.54)
+      (name "TRIG" (effects (font (size 1.27 1.27))))
+      (number "2" (effects (font (size 1.27 1.27))))
+    )
+  )
+)
+"""
+
+
+def test_unit0_pins_fold_into_unit1():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        lib_dir = Path(tmp)
+        (lib_dir / "Timer.kicad_sym").write_text(UNIT0_LIB, encoding="utf-8")
+        units = _symbol_units_from_lib(lib_dir, ["Timer:LM555xN"])
+    # unit-0 pins (power) are common to every unit: they must ride along with
+    # unit 1 instead of creating a phantom second instance to place.
+    assert set(units["Timer:LM555xN"]) == {1}, units
+    assert units["Timer:LM555xN"][1] == {"1", "2", "8"}, units
 
 
 def main() -> int:
