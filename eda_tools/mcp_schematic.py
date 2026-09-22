@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from math import cos, radians, sin
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -114,6 +115,8 @@ def _is_gnd(name: Any) -> bool:
 def _rail_symbol(name: Any) -> Optional[str]:
     """Power-library symbol name for a rail net, or None."""
     n = str(name).upper().replace("-", "_")
+    if n in {"VEE", "VSS", "V_", "VNEG", "V_NEG"}:
+        return "VEE"
     if n in {"VCC", "VDD", "3V3", "3.3V"}:
         return "+3V3" if "3" in n else "VCC"
     if n in {"5V", "+5V", "VCC_5V", "VDD_5V", "VCC5V"}:
@@ -650,6 +653,350 @@ def _pin_positions_from_sch(text: str) -> Dict[Tuple[str, str], Tuple[float, flo
     return positions
 
 
+def _remap_power_pins(
+    ir_nets: List[Dict[str, Any]],
+    pin_types: Dict[Tuple[str, str], Tuple[str, str]],
+    pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+) -> Tuple[List[Dict[str, Any]], Set[Tuple[str, str]]]:
+    """Re-home IR connections that land supply pins on the wrong nets.
+
+    Free-form IRs describe opamps as 5-pin behavioural parts, so their
+    supply tail nodes land positionally wherever (LM358: pin 4 is V-,
+    pin 8 is V+). Two repairs, applied net by net:
+
+    * a rail net wired onto a pin that is not a supply pin of the rail's
+      polarity moves to a free supply pin of that polarity - and moving
+      off a pin frees it for the opposite rail (VCC leaving V- opens it
+      for VEE);
+    * a signal net never carries supply pins: they are dropped here and
+      the power-attach pass re-homes each to the rail its pin name asks
+      for (V- -> GND, V+ -> the design's main rail).
+
+    Returns (rewritten nets, pins excluded from the connectivity gate).
+    """
+
+    def polarity_neg(ref: str, pin: str) -> Optional[bool]:
+        name, etype = pin_types.get((ref, pin), ("", ""))
+        if etype not in ("power_in", "power_out"):
+            return None
+        u = str(name).upper()
+        return "GND" in u or u in {"VSS", "V-", "VEE", "VGND"}
+
+    occupied: Set[Tuple[str, str]] = set()
+    for net in ir_nets:
+        if isinstance(net, dict):
+            for conn in net.get("connections") or []:
+                r, _, p = str(conn).rpartition(".")
+                if r and p and (r, p) in pin_positions:
+                    occupied.add((r, p))
+
+    def free_power_pin(ref: str, neg: bool) -> Optional[Tuple[str, str]]:
+        for (r2, p2), (nm2, et2) in sorted(pin_types.items()):
+            if r2 != ref or et2 != "power_in":
+                continue
+            if (r2, p2) in occupied or (r2, p2) not in pin_positions:
+                continue
+            u2 = str(nm2).upper()
+            if ("GND" in u2 or u2 in {"VSS", "V-", "VEE", "VGND"}) != neg:
+                continue
+            return (r2, p2)
+        return None
+
+    # Role remap for behavioural opamp/comparator IRs: their five nodes
+    # follow [IN+, IN-, OUT, V+, V-], but the real DIP-8 symbol keeps
+    # 1=OUT, 2=IN-, 3=IN+, 4=V-, 8=V+. Positional wiring then grounds the
+    # output and drives inputs from the supply - the role map below sends
+    # each node to the pin that plays its part. Enabled only when the tail
+    # nodes sit on rail-ish nets (the convention's signature); a free-form
+    # IR whose pin 4/5 carry signals keeps its positional wiring.
+    pin_net: Dict[Tuple[str, str], str] = {}
+    for net in ir_nets:
+        if isinstance(net, dict):
+            nm = str(net.get("name") or "")
+            for conn in net.get("connections") or []:
+                r, _, pn = str(conn).rpartition(".")
+                if r and pn:
+                    pin_net.setdefault((r, pn), nm)
+
+    rewrite: Dict[Tuple[str, str], str] = {}
+    refs = sorted({r for r, _p in pin_net})
+    for ref in refs:
+        declared = sorted({p for r, p in pin_net if r == ref})
+        if declared != ["1", "2", "3", "4", "5"]:
+            continue
+        plus = minus = out = pos = neg = None
+        for (r2, p2), (nm2, et2) in sorted(pin_types.items()):
+            if r2 != ref or (r2, p2) not in pin_positions:
+                continue
+            n2 = str(nm2)
+            if n2 == "+" and plus is None:
+                plus = p2
+            elif n2 == "-" and minus is None:
+                minus = p2
+            elif et2 == "output" and out is None:
+                out = p2
+            elif et2 == "power_in":
+                u2 = n2.upper()
+                if "GND" in u2 or u2 in {"VSS", "V-", "VEE", "VGND"}:
+                    neg = neg or p2
+                else:
+                    pos = pos or p2
+        if not all((plus, minus, out, pos, neg)):
+            continue
+        net_of = lambda k: pin_net.get((ref, k), "")
+        if all(
+            _is_gnd(net_of(k)) or _rail_symbol(net_of(k)) for k in ("4", "5")
+        ):
+            # opamp convention [IN+, IN-, OUT, V+, V-]: rails at the tail
+            role_map = {"1": plus, "2": minus, "3": out, "4": pos, "5": neg}
+        elif (
+            _rail_symbol(net_of("1"))
+            and not _is_gnd(net_of("1"))
+            and _is_gnd(net_of("2"))
+        ):
+            # comparator convention [V+, GND, IN-, OUT, IN+]: rails at the
+            # head, inverting input first
+            role_map = {"1": pos, "2": neg, "3": minus, "4": out, "5": plus}
+        else:
+            continue
+        if all(role_map[k] == k for k in role_map):
+            continue
+        for k, target in role_map.items():
+            if target != k:
+                rewrite[(ref, k)] = target
+                logger.info(
+                    "MCP wiring: opamp role remap %s.%s -> %s.%s", ref, k, ref, target
+                )
+
+    if rewrite:
+        for net in ir_nets:
+            if isinstance(net, dict):
+                net["connections"] = [
+                    f"{r}.{rewrite.get((r, p), p)}"
+                    if (r, p) in rewrite
+                    else str(c)
+                    for c in (net.get("connections") or [])
+                    for r, _x, p in [str(c).rpartition(".")]
+                ]
+        # refresh the occupancy/pin_net view the supply rules work from
+        pin_net = {}
+        for net in ir_nets:
+            if isinstance(net, dict):
+                nm = str(net.get("name") or "")
+                for conn in net.get("connections") or []:
+                    r, _, pn = str(conn).rpartition(".")
+                    if r and pn:
+                        pin_net.setdefault((r, pn), nm)
+        occupied = {
+            (r, p) for (r, p) in pin_net if (r, p) in pin_positions
+        }
+
+    gate_dropped: Set[Tuple[str, str]] = set()
+    nets_out: List[Dict[str, Any]] = []
+    for net in ir_nets:
+        if not isinstance(net, dict):
+            nets_out.append(net)
+            continue
+        name = str(net.get("name") or "")
+        railish = bool(_is_gnd(name) or _rail_symbol(name))
+        want_neg = _is_gnd(name) or str(name).upper() in {"VEE", "VSS", "V-"}
+        conns = [str(c) for c in (net.get("connections") or [])]
+        new_conns: List[str] = []
+        for conn in conns:
+            ref, _, pin = conn.rpartition(".")
+            pol = polarity_neg(ref, pin) if (ref, pin) in pin_positions else None
+            if pol is None:
+                new_conns.append(conn)  # not a supply pin: faithful wiring
+                continue
+            if railish and pol == want_neg:
+                new_conns.append(conn)  # already the right supply pin
+                continue
+            if not railish:
+                # supply pin on a signal net: drop it, power-attach
+                # re-homes it to the rail its pin name asks for
+                gate_dropped.add((ref, pin))
+                occupied.discard((ref, pin))
+                logger.info(
+                    "MCP wiring: signal net %s drops supply pin %s.%s (re-homed to its rail)",
+                    name, ref, pin,
+                )
+                continue
+            target = free_power_pin(ref, want_neg)
+            if target:
+                logger.info(
+                    "MCP wiring: rail %s moves %s.%s -> %s.%s (%s)",
+                    name, ref, pin, target[0], target[1], pin_types[target][0],
+                )
+                occupied.discard((ref, pin))
+                occupied.add(target)
+                gate_dropped.add((ref, pin))
+                new_conns.append(f"{target[0]}.{target[1]}")
+            else:
+                new_conns.append(conn)
+        nets_out.append({**net, "connections": new_conns})
+    return nets_out, gate_dropped
+
+
+def _pin_anchors(text: str) -> Dict[Tuple[str, str], Tuple[float, float]]:
+    """{(ref, pin): owning instance centre} for multi-unit awareness.
+
+    Each unit of a multi-unit symbol is its own instance with its own
+    anchor; outward stub directions must be judged against the unit that
+    actually owns the pin, not unit 1's anchor.
+    """
+    lib_units = _pin_offsets_from_lib_symbols(text)
+    out: Dict[Tuple[str, str], Tuple[float, float]] = {}
+    for inst in _symbol_instances(text):
+        units = lib_units.get(inst["lib_id"])
+        if not units:
+            continue
+        pins = {**(units.get(0) or {}), **(units.get(inst["unit"]) or {})}
+        for pin in pins:
+            out.setdefault((inst["ref"], pin), (inst["x"], inst["y"]))
+    return out
+
+
+def _pin_types_from_lib_symbols(text: str) -> Dict[str, Dict[str, Tuple[str, str]]]:
+    """{lib_id: {pin number: (pin name, electrical type)}} from embedded symbols.
+
+    Covers unit sub-symbols and root (common) pins alike; aliases that
+    (extends "...") a base symbol resolve through to it.
+    """
+    lib_start = text.find("(lib_symbols")
+    if lib_start < 0:
+        return {}
+    open_paren = text.find("(", lib_start)
+    end = _matching_paren(text, open_paren)
+    block_all = text[open_paren:end + 1] if end > 0 else text[lib_start:]
+
+    out: Dict[str, Dict[str, Tuple[str, str]]] = {}
+
+    def parse_symbol_block(lib_id: str, block: str) -> None:
+        pins: Dict[str, Tuple[str, str]] = {}
+        for m in re.finditer(
+            r'\(\s*pin\s+(\w+)\s+\w+\s.*?\(\s*name\s+"([^"]*)".*?\(\s*number\s+"([^"]*)"',
+            block, flags=re.DOTALL,
+        ):
+            etype, name, number = m.group(1), m.group(2), m.group(3)
+            pins.setdefault(number, (name, etype))
+        if pins:
+            out.setdefault(lib_id, {}).update(pins)
+
+    pos = 0
+    while True:
+        match = re.search(r'\(\s*symbol\s+"([^"]+)"', block_all[pos:])
+        if not match:
+            break
+        lib_id = match.group(1)
+        block_open = pos + match.start()
+        open_paren2 = block_all.find("(", block_open)
+        end2 = _matching_paren(block_all, open_paren2)
+        if end2 < 0:
+            break
+        block = block_all[open_paren2:end2 + 1]
+        pos = end2 + 1
+        # skip nested unit sub-symbols ("NAME_1_1"): their pins repeat
+        # inside the parent block this loop already visits
+        if re.search(r'_\d+_\d+"', block_all[block_open:block_open + len(lib_id) + 4]):
+            continue
+        extends_m = re.search(r'\(\s*extends\s+"([^"]+)"', block)
+        if extends_m:
+            base = out.get(extends_m.group(1)) or out.get(
+                f"{lib_id.rpartition(':')[0]}:{extends_m.group(1)}"
+            )
+            if base:
+                out.setdefault(lib_id, {}).update(base)
+            continue
+        parse_symbol_block(lib_id, block)
+    return out
+
+
+def _pin_types_on_sheet(text: str) -> Dict[Tuple[str, str], Tuple[str, str]]:
+    """{(ref, pin): (pin name, electrical type)} for every placed instance pin."""
+    lib_types = _pin_types_from_lib_symbols(text)
+    out: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    for inst in _symbol_instances(text):
+        types = lib_types.get(inst["lib_id"])
+        if not types:
+            continue
+        for pin, name_type in types.items():
+            out.setdefault((inst["ref"], pin), name_type)
+    return out
+
+
+def _sheet_wire_segments(text: str) -> List[Tuple[float, float, float, float]]:
+    """All sheet wire segments ((x1, y1, x2, y2)), any polyline length."""
+    segs: List[Tuple[float, float, float, float]] = []
+    for m in re.finditer(r"\(\s*wire\s*\(pts((?:\s*\(xy [\d.\-]+ [\d.\-]+\))+)", text):
+        pts = re.findall(r"\(xy ([\d.\-]+) ([\d.\-]+)", m.group(1))
+        coords = [(float(a), float(b)) for a, b in pts]
+        for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+            segs.append((x1, y1, x2, y2))
+    return segs
+
+
+def _unconnected_pins(
+    text: str,
+    pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+    pin_types: Dict[Tuple[str, str], Tuple[str, str]],
+) -> List[Dict[str, Any]]:
+    """Placed component pins with nothing at their position.
+
+    A pin counts as connected when a wire segment passes through its
+    position, or a label / power-symbol pin / existing no-connect anchors
+    exactly there. Power-symbol instances (#PWR/#FLG) themselves are not
+    reported.
+    """
+    segs = _sheet_wire_segments(text)
+
+    # KiCad connects a pin to a wire only when the pin's point coincides
+    # with a wire ENDPOINT, or with an explicit junction on the wire's
+    # interior - a wire merely passing through a pin does nothing.
+    endpoints: Set[Tuple[float, float]] = set()
+    for x1, y1, x2, y2 in segs:
+        endpoints.add((x1, y1))
+        endpoints.add((x2, y2))
+    junctions: Set[Tuple[float, float]] = set()
+    for m in re.finditer(r"\(\s*junction\b[^)]*?\(\s*at\s+([\d.\-]+)\s+([\d.\-]+)", text):
+        junctions.add((float(m.group(1)), float(m.group(2))))
+
+    def on_wire(px: float, py: float) -> bool:
+        return (px, py) in endpoints or (px, py) in junctions
+
+    anchors: Set[Tuple[float, float]] = set()
+    for m in re.finditer(
+        r"\(\s*(?:label|global_label|no_connect)\b[^)]*?\(\s*at\s+([\d.\-]+)\s+([\d.\-]+)", text
+    ):
+        anchors.add((float(m.group(1)), float(m.group(2))))
+    power_pins = {
+        pos for (ref, _pin), pos in pin_positions.items() if ref.startswith("#")
+    }
+
+    out: List[Dict[str, Any]] = []
+    for (ref, pin), (px, py) in pin_positions.items():
+        if ref.startswith("#"):
+            continue
+        if on_wire(px, py) or (px, py) in anchors or (px, py) in power_pins:
+            continue
+        name, etype = pin_types.get((ref, pin), ("", ""))
+        out.append({"ref": ref, "pin": pin, "name": name, "etype": etype, "x": px, "y": py})
+    return out
+
+
+def _inject_no_connects(text: str, points: List[Tuple[float, float]]) -> str:
+    """Append (no_connect (at x y)) stanzas just before the root close."""
+    if not points:
+        return text
+    stanzas = []
+    for x, y in points:
+        u = uuid.uuid4()
+        stanzas.append(f'\t(no_connect (at {x:g} {y:g}) (uuid "{u}"))\n')
+    stripped = text.rstrip()
+    if not stripped.endswith(")"):
+        return text
+    return stripped[:-1] + "\n" + "".join(stanzas) + ")\n"
+
+
 # ---------------------------------------------------------------------------
 # netlist validation gate
 
@@ -1098,6 +1445,11 @@ def _summarize_erc(erc_text: str) -> Dict[str, Any]:
     warnings = 0
     for sheet in data.get("sheets", []):
         for violation in sheet.get("violations", []):
+            if violation.get("type") == "lib_symbol_mismatch":
+                # the vendored MCP wheel embeds patched symbols (unit-0 pin
+                # folding); the intentional divergence from the stock library
+                # is not a schematic defect
+                continue
             severity = violation.get("severity", "warning")
             if severity == "error":
                 errors += 1
@@ -1188,10 +1540,11 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                 ref_pins.setdefault(r, set()).add(p)
 
     def needed_units(ref: str, lib_id: str) -> List[int]:
+        # Every unit of a multi-unit symbol goes on the sheet - the unused
+        # halves (LM358 unit B, an MCU's spare banks) sit next to the used
+        # ones with no-connect flags instead of raising ERC missing_unit.
         units = unit_pins.get(lib_id) or {}
-        used = ref_pins.get(ref, set())
-        wanted = sorted(u for u, pins in units.items() if pins & used)
-        return wanted or [1]
+        return sorted(units) or [1]
 
     UNIT_STACK_DY = 25.4
     stack_extra: Dict[str, float] = {}
@@ -1305,9 +1658,44 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                     )
 
                 aliases = _pin_aliases(placed, ir.get("nets") or [], pin_positions)
-                wire_plans = _plan_wire_routes(
-                    ir.get("nets") or [], placed_refs, aliases, pin_positions, columns_x
+                # pin electrical types (power_in / output / ...) decide the
+                # ERC clean-up passes below; instances do not change during
+                # wiring so the placement-time text stays valid
+                _placed_text = sch_path.read_text(encoding="utf-8", errors="replace")
+                pin_types = _pin_types_on_sheet(_placed_text)
+                pin_anchors = _pin_anchors(_placed_text)
+                wired_nets, _gate_dropped = _remap_power_pins(
+                    ir.get("nets") or [], pin_types, pin_positions
                 )
+                wire_plans = _plan_wire_routes(
+                    wired_nets, placed_refs, aliases, pin_positions, columns_x
+                )
+                # pins the net loop below wired (directly or via stubs); the
+                # power-attach pass takes the power_in pins not in here
+                claimed_pins: Set[Tuple[str, str]] = set()
+                flagged_rails: Set[str] = set()
+                comp_pin_points: Set[Tuple[float, float]] = {
+                    pos for (r, _p), pos in pin_positions.items() if not r.startswith("#")
+                }
+                drawn_segments: List[Tuple[float, float, float, float, str]] = []
+
+                def on_any_wire(px: float, py: float, net: str) -> bool:
+                    """A pin or power symbol landing anywhere on a wire - even
+                    mid-segment - joins that net in KiCad. Wires of the SAME
+                    net are fine (that is what connects the flag)."""
+                    for x1, y1, x2, y2, seg_net in drawn_segments:
+                        if seg_net == net:
+                            continue
+                        if abs(x1 - x2) < _EPS and abs(x2 - px) < _EPS:
+                            if min(y1, y2) - _EPS <= py <= max(y1, y2) + _EPS:
+                                return True
+                        elif abs(y1 - y2) < _EPS and abs(y1 - py) < _EPS:
+                            if min(x1, x2) - _EPS <= px <= max(x1, x2) + _EPS:
+                                return True
+                    return False
+                label_anchor_points: Set[Tuple[float, float]] = set()
+                power_stub_points: Dict[Tuple[float, float], str] = {}
+                pending_flags: List[Tuple[str, float, float, Tuple[float, float]]] = []
                 # Layout midline: vertical stubs (pins above/below a symbol)
                 # carry their label sideways; pointing the text at the
                 # nearer outside margin keeps it off the IC body, the trunk
@@ -1325,8 +1713,8 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                 # power nets get power symbols on each member pin (they merge
                 # globally by value); the rest get local labels. Pins that do
                 # not exist on the mapped symbol are dropped with a warning.
-                dropped_pins: Set[Tuple[str, str]] = set()
-                for net in ir.get("nets", []) or []:
+                dropped_pins: Set[Tuple[str, str]] = set(_gate_dropped)
+                for net in wired_nets:
                     if not isinstance(net, dict):
                         continue
                     net_name = str(net.get("name") or "")
@@ -1346,6 +1734,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                 # only; every pin at that point joins the net.
                                 seen_points.add(pos)
                                 members.append((ref, pin, pos))
+                                claimed_pins.add((ref, pin))
                     if not members:
                         continue
 
@@ -1360,14 +1749,40 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                     "end_pos": [seg[2], seg[3]],
                                 },
                             )
+                            drawn_segments.append((seg[0], seg[1], seg[2], seg[3], net_name))
                         for jx, jy in route["junctions"]:
                             await mcp.call("add_junction", {"position": [jx, jy]})
                         continue
 
                     rail = "GND" if _is_gnd(net_name) else _rail_symbol(net_name)
+                    if rail is None and members and all(
+                        pin_types.get((r, p), ("", ""))[1] == "power_in"
+                        for r, p, _pos in members
+                    ):
+                        # a lone power-input pin names its own net (old IRs
+                        # emit pin-number nets); give it the rail its own
+                        # pin name asks for, flagged like any other rail
+                        pname = pin_types.get((members[0][0], members[0][1]), ("VCC", ""))[0]
+                        u = str(pname).upper()
+                        rail = (
+                            "GND"
+                            if ("GND" in u or u in {"VSS", "V-", "VEE"})
+                            else (_rail_symbol(pname) or "VCC")
+                        )
+                        # the renamed rail is power plumbing, not IR
+                        # connectivity the gate must verify
+                        dropped_pins.update((r, p) for r, p, _pos in members)
 
-                    def stub_end(ref: str, pos: Tuple[float, float]) -> Tuple[float, float]:
-                        """Pin position shifted outward from the symbol.
+                    def stub_end(
+                        ref: str, pin: str, pos: Tuple[float, float]
+                    ) -> Tuple[float, float]:
+                        """Pin position shifted outward from its symbol.
+
+                        The outward direction is judged against the instance
+                        anchor of the unit that OWNS the pin - a multi-unit
+                        symbol stacks its units, so unit 1's anchor would
+                        turn side pins of lower units into bottom pins and
+                        send stubs straight through neighbouring pins.
 
                         Power symbols and their value text sitting one grid
                         off the pin still render over the pin-number column
@@ -1375,7 +1790,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                         label/symbol text left-to-right from its anchor), so
                         rail stubs clear the whole pin-name strip.
                         """
-                        cx, cy = positions.get(ref, pos)
+                        cx, cy = pin_anchors.get((ref, pin), positions.get(ref, pos))
                         dx, dy = pos[0] - cx, pos[1] - cy
                         if abs(dx) >= abs(dy):
                             return (pos[0] + (7.62 if dx >= 0 else -7.62), pos[1])
@@ -1383,11 +1798,13 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
 
                     if rail:
                         for ref, pin, pos in members:
-                            ex, ey = stub_end(ref, pos)
+                            ex, ey = stub_end(ref, pin, pos)
                             await mcp.call(
                                 "add_wire",
                                 {"start_pos": [pos[0], pos[1]], "end_pos": [ex, ey]},
                             )
+                            drawn_segments.append((pos[0], pos[1], ex, ey, rail))
+                            power_stub_points[(ex, ey)] = rail
                             pwr_i += 1
                             await mcp.call(
                                 "add_component",
@@ -1399,22 +1816,22 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                     "footprint": "",
                                 },
                             )
-                        # One PWR_FLAG on the first member of every power net
-                        # (ground included) keeps ERC quiet about undriven
-                        # power inputs.
-                        ref, pin, pos = members[0]
-                        ex, ey = stub_end(ref, pos)
-                        pwr_i += 1
-                        await mcp.call(
-                            "add_component",
-                            {
-                                "lib_id": "power:PWR_FLAG",
-                                "reference": f"#FLG{pwr_i:02d}",
-                                "value": rail,
-                                "position": [ex, ey],
-                                "footprint": "",
-                            },
+                        # One PWR_FLAG per power net keeps ERC quiet about
+                        # undriven power inputs - unless a member already
+                        # drives the rail (a regulator's power-output pin,
+                        # which would clash with the flag's power output).
+                        net_has_driver = any(
+                            pin_types.get((r, p), ("", ""))[1] == "power_out"
+                            for r, p, _pos in members
                         )
+                        if not net_has_driver:
+                            # flags are placed after ALL nets are wired, when
+                            # every label anchor and wire endpoint is known -
+                            # an in-loop flag can otherwise land on a label
+                            # drawn later and join the wrong net
+                            ref, _pin, pos = members[0]
+                            ex, ey = stub_end(ref, _pin, pos)
+                            pending_flags.append((rail, ex, ey, pos))
                     else:
                         label = _safe_label(net_name)
                         # KiCad draws label text left-to-right starting at
@@ -1424,7 +1841,9 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                         # pin name, or symbol body.
                         stub = _label_stub_len(label)
                         for _ref, _pin, pos in members:
-                            cx, cy = positions.get(_ref, pos)
+                            cx, cy = pin_anchors.get(
+                                (_ref, _pin), positions.get(_ref, pos)
+                            )
                             dx, dy = pos[0] - cx, pos[1] - cy
                             if abs(dx) >= abs(dy):
                                 # Side pin: straight stub away from the body.
@@ -1447,15 +1866,126 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                     "add_wire",
                                     {"start_pos": [a[0], a[1]], "end_pos": [b[0], b[1]]},
                                 )
+                                drawn_segments.append((a[0], a[1], b[0], b[1], net_name))
                             await mcp.call(
                                 "add_label",
                                 {"text": label, "position": [end[0], end[1]]},
                             )
+                            label_anchor_points.add(end)
+
+                # Power-input pins the IR never mapped (LM358 V+/V-, an
+                # MCU's AVCC): tie them to their rail so ERC sees a driven
+                # supply instead of dangling power inputs. Positive pins go
+                # to the design's own main rail when one exists.
+                main_pos_rail = "VCC"
+                for net in wired_nets:
+                    if isinstance(net, dict) and not _is_gnd(net.get("name")):
+                        sym = _rail_symbol(net.get("name"))
+                        if sym:
+                            main_pos_rail = sym
+                            break
+                for (ref, pin), (pname, etype) in sorted(pin_types.items()):
+                    if etype != "power_in" or ref.startswith("#"):
+                        continue
+                    if (ref, pin) in claimed_pins or (ref, pin) not in pin_positions:
+                        continue
+                    pos = pin_positions[(ref, pin)]
+                    upper = str(pname).upper()
+                    if _is_gnd(pname) or "GND" in upper or upper in {"VSS", "V-", "VEE", "VGND"}:
+                        rail = "GND"
+                    else:
+                        rail = main_pos_rail
+                    ex, ey = stub_end(ref, pin, pos)
+                    await mcp.call(
+                        "add_wire",
+                        {"start_pos": [pos[0], pos[1]], "end_pos": [ex, ey]},
+                    )
+                    drawn_segments.append((pos[0], pos[1], ex, ey, rail))
+                    power_stub_points[(ex, ey)] = rail
+                    pwr_i += 1
+                    await mcp.call(
+                        "add_component",
+                        {
+                            "lib_id": f"power:{rail}",
+                            "reference": f"#PWR{pwr_i:02d}",
+                            "value": rail,
+                            "position": [ex, ey],
+                            "footprint": "",
+                        },
+                    )
+                    if rail not in flagged_rails:
+                        pending_flags.append((rail, ex, ey, pos))
+
+                # Place deferred PWR_FLAGs with full knowledge of every
+                # label anchor, wire endpoint and power stub. The flag sits
+                # at a rail's power-symbol stub end, stepping along the stub
+                # axis only - never diagonally, and never onto a foreign
+                # anchor (that would steal the flag into another net).
+                for rail, ex, ey, pos in pending_flags:
+                    if rail in flagged_rails:
+                        continue
+                    horizontal = abs(ey - pos[1]) < _EPS
+                    step = 2.54 * (
+                        1 if (ex >= pos[0] if horizontal else ey >= pos[1]) else -1
+                    )
+                    fx, fy = ex, ey
+
+                    def spot_blocked(px: float, py: float) -> bool:
+                        stub_rail = power_stub_points.get((px, py))
+                        return (
+                            (px, py) in comp_pin_points
+                            or (px, py) in label_anchor_points
+                            or (stub_rail is not None and stub_rail != rail)
+                            or on_any_wire(px, py, rail)
+                        )
+
+                    for _n in range(20):
+                        if not spot_blocked(fx, fy):
+                            break
+                        fx, fy = (fx + step, fy) if horizontal else (fx, fy + step)
+                        await mcp.call(
+                            "add_wire",
+                            {"start_pos": [ex, ey], "end_pos": [fx, fy]},
+                        )
+                        drawn_segments.append((ex, ey, fx, fy, rail))
+                        ex, ey = fx, fy
+                    if not spot_blocked(fx, fy):
+                        pwr_i += 1
+                        await mcp.call(
+                            "add_component",
+                            {
+                                "lib_id": "power:PWR_FLAG",
+                                "reference": f"#FLG{pwr_i:02d}",
+                                "value": rail,
+                                "position": [fx, fy],
+                                "footprint": "",
+                            },
+                        )
+                        flagged_rails.add(rail)
+                    else:
+                        logger.info(
+                            "MCP wiring: no free spot for PWR_FLAG on %s; skipped", rail
+                        )
 
                 await mcp.call("save_schematic", {"file_path": str(sch_path)})
 
     if not sch_path.exists():
         raise McpSchematicError("MCP server did not save a schematic file")
+
+    # No-connect flags for every pin still without a wire/label/power stub
+    # (spare MCU GPIOs, the unused half of a dual opamp, spare connector
+    # pins): ERC reads them as intentionally open, not dangling.
+    final_text = sch_path.read_text(encoding="utf-8", errors="replace")
+    pin_positions_final = _pin_positions_from_sch(final_text)
+    nc_points = [
+        (p["x"], p["y"])
+        for p in _unconnected_pins(final_text, pin_positions_final, pin_types)
+    ]
+    if nc_points:
+        sch_path.write_text(
+            _inject_no_connects(final_text, nc_points), encoding="utf-8"
+        )
+        pin_positions = pin_positions_final
 
     # Gate: the exported netlist must preserve the IR's connectivity before
     # the artifacts are accepted.

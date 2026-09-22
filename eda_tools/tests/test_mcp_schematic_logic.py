@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from mcp_schematic import (  # noqa: E402
     _connectivity_matches,
+    _remap_power_pins,
     _fmt_value,
     _label_stub_len,
     _parse_netlist_nets,
@@ -300,6 +301,144 @@ def test_wire_route_trunks_on_kicad_grid():
                 assert abs(v / 1.27 - round(v / 1.27)) < 1e-6, f"off-grid {seg}"
         for jx, jy in plan["junctions"]:
             assert abs(jx / 1.27 - round(jx / 1.27)) < 1e-6, f"off-grid junction {(jx, jy)}"
+
+
+_SCH_SNIPPET = """(kicad_sch
+	(lib_symbols
+		(symbol "Device:R"
+			(symbol "R_0_1"
+				(rectangle (start -1.016 -2.54) (end 1.016 2.54))
+			)
+			(symbol "R_1_1"
+				(pin passive line (at 0 3.81 270) (length 1.27)
+					(name "~" (effects (font (size 1.27 1.27))))
+					(number "1" (effects (font (size 1.27 1.27))))
+				)
+				(pin passive line (at 0 -3.81 90) (length 1.27)
+					(name "~" (effects (font (size 1.27 1.27))))
+					(number "2" (effects (font (size 1.27 1.27))))
+				)
+			)
+		)
+		(symbol "Amplifier_Operational:LM358"
+			(pin power_in line (at -5.08 5.08 270) (length 2.54)
+				(name "V+") (number "8")
+			)
+			(pin output line (at 5.08 0 0) (length 2.54)
+				(name "~") (number "1")
+			)
+		)
+	)
+	(symbol (lib_id "Device:R") (at 100 90 0) (unit 1)
+		(property "Reference" "R1" (at 100 90 0))
+	)
+	(symbol (lib_id "Device:R") (at 120 90 0) (unit 1)
+		(property "Reference" "R2" (at 120 90 0))
+	)
+	(symbol (lib_id "Amplifier_Operational:LM358") (at 150 90 0) (unit 1)
+		(property "Reference" "U1" (at 150 90 0))
+	)
+	(wire (pts (xy 100 86.19) (xy 150 86.19))
+		(stroke (width 0) (type default))
+	)
+)"""
+
+
+def test_pin_types_and_unconnected_detection():
+    from mcp_schematic import _pin_types_on_sheet, _unconnected_pins
+
+    types = _pin_types_on_sheet(_SCH_SNIPPET)
+    assert types.get(("U1", "8")) == ("V+", "power_in"), types
+    assert types.get(("U1", "1"))[1] == "output"
+    assert types.get(("R1", "1"))[1] == "passive"
+
+    from mcp_schematic import _pin_positions_from_sch
+
+    pos = _pin_positions_from_sch(_SCH_SNIPPET)
+    unconnected = _unconnected_pins(_SCH_SNIPPET, pos, types)
+    keys = {(p["ref"], p["pin"]) for p in unconnected}
+    # R1.1 sits at the wire's endpoint (connected); R2.1 only has the wire
+    # passing through it - KiCad connects that only via a junction, so it
+    # still needs a no-connect. R1.2/U1.1/U1.8 have nothing at all.
+    assert keys == {("R1", "2"), ("R2", "1"), ("R2", "2"), ("U1", "1"), ("U1", "8")}, keys
+    by = {(p["ref"], p["pin"]): p for p in unconnected}
+    assert by[("U1", "8")]["etype"] == "power_in"
+
+
+def test_no_connect_injection():
+    from mcp_schematic import _inject_no_connects
+
+    out = _inject_no_connects(_SCH_SNIPPET, [(100.0, 93.81), (155.08, 90.0)])
+    assert out.count("(no_connect") == 2
+    assert "(no_connect (at 100 93.81)" in out
+    # root stays balanced: the injected stanzas sit before the final close
+    assert out.rstrip().endswith(")")
+    # empty injection is a no-op
+    assert _inject_no_connects(_SCH_SNIPPET, []) == _SCH_SNIPPET
+
+
+
+
+def test_remap_power_pins_opamp_and_comparator_conventions():
+    # LM358 pinout: 1=OUT, 2=IN-, 3=IN+, 4=V-, 8=V+
+    pin_types = {
+        ("U1", "1"): ("~", "output"),
+        ("U1", "2"): ("-", "input"),
+        ("U1", "3"): ("+", "input"),
+        ("U1", "4"): ("V-", "power_in"),
+        ("U1", "8"): ("V+", "power_in"),
+    }
+    pin_positions = {k: (float(i * 10), 10.0) for i, k in enumerate(pin_types)}
+
+    # opamp convention [IN+, IN-, OUT, V+, V-]: rails at the tail
+    opamp = [
+        {"name": "GND", "connections": ["U1.1"]},
+        {"name": "SUM", "connections": ["U1.2", "R1.1"]},
+        {"name": "OUT", "connections": ["U1.3", "R2.1"]},
+        {"name": "VCC", "connections": ["U1.4", "V1.1"]},
+        {"name": "VEE", "connections": ["U1.5", "V2.1"]},
+    ]
+    nets, dropped = _remap_power_pins(opamp, pin_types, pin_positions)
+    conns = {n["name"]: n["connections"] for n in nets if isinstance(n, dict)}
+    assert "U1.3" in conns["GND"]       # IN+ (node 1) -> pin 3
+    assert "U1.2" in conns["SUM"]       # IN- stays pin 2
+    assert "U1.1" in conns["OUT"]       # OUT (node 3) -> pin 1
+    assert "U1.8" in conns["VCC"]       # V+ (node 4) -> pin 8
+    assert "U1.4" in conns["VEE"]       # V- (node 5) -> pin 4
+    # role remap rewrites the nets themselves; the positional originals
+    # (U1.4 on VCC, U1.1 on GND) no longer appear anywhere, so the gate
+    # needs no exclusions for them
+    assert dropped == set()
+
+    # comparator convention [V+, GND, IN-, OUT, IN+]: rails at the head
+    comp = [
+        {"name": "VCC", "connections": ["U1.1", "V1.1"]},
+        {"name": "0", "connections": ["U1.2", "V1.2"]},
+        {"name": "TH", "connections": ["U1.3", "R1.2"]},
+        {"name": "OUT", "connections": ["U1.4", "R4.1"]},
+        {"name": "REF", "connections": ["U1.5", "R2.2"]},
+    ]
+    nets2, _ = _remap_power_pins(comp, pin_types, pin_positions)
+    conns2 = {n["name"]: n["connections"] for n in nets2 if isinstance(n, dict)}
+    assert "U1.8" in conns2["VCC"]      # V+ (node 1) -> pin 8
+    assert "U1.4" in conns2["0"]        # GND (node 2) -> pin 4
+    assert "U1.2" in conns2["TH"]       # IN- (node 3) -> pin 2
+    assert "U1.1" in conns2["OUT"]      # OUT (node 4) -> pin 1
+    assert "U1.3" in conns2["REF"]      # IN+ (node 5) -> pin 3
+
+    # a free-form IR whose tail pins carry signals keeps positional wiring
+    wild = [
+        {"name": "A", "connections": ["U1.1", "R1.1"]},
+        {"name": "B", "connections": ["U1.2", "R2.1"]},
+        {"name": "C", "connections": ["U1.3", "R3.1"]},
+        {"name": "OUT", "connections": ["U1.4", "R4.1"]},
+        {"name": "REF", "connections": ["U1.5", "R5.1"]},
+    ]
+    nets3, dropped3 = _remap_power_pins(wild, pin_types, pin_positions)
+    conns3 = {n["name"]: n["connections"] for n in nets3 if isinstance(n, dict)}
+    assert "U1.1" in conns3["A"]        # positional: no convention matched
+    assert "U1.4" not in conns3["OUT"]  # ...but the supply pin still leaves the signal net
+    assert ("U1", "4") in dropped3
 
 
 def main() -> int:
