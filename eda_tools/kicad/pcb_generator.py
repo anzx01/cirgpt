@@ -346,10 +346,25 @@ class PCBGenerator:
         """
         Tracks follow the netlist: shared-node components chain together,
         rail nodes drop to full-width VCC (top) / GND (bottom) buses.
+
+        Track endpoints are the real pad centres (component position plus
+        the footprint's local pad offset; netlist node order is pad order),
+        not component centres - pads sit half a pitch away from them.
         """
         nets: Dict[str, List[Dict[str, Any]]] = {}
+        pad_of: Dict[Tuple[str, str], Dict[str, float]] = {}
         for comp in components:
-            for node in comp.get("nodes", []):
+            geom = _geom_for(comp.get("footprint", ""))
+            local_pads = _pads_local(geom)
+            pos = comp.get("position", {"x": 0, "y": 0})
+            rot = int(comp.get("rotation", 0))
+            for k, node in enumerate(comp.get("nodes", [])):
+                if k < len(local_pads):
+                    lx, ly = _rotate(local_pads[k][0], local_pads[k][1], rot)
+                    x, y = pos["x"] + lx, pos["y"] + ly
+                else:
+                    x, y = pos["x"], pos["y"]
+                pad_of.setdefault((comp["name"], node), {"x": x, "y": y})
                 nets.setdefault(node, []).append(comp)
 
         board_w = max(c["position"]["x"] for c in components) + 10 \
@@ -392,13 +407,15 @@ class PCBGenerator:
                 ordered = sorted(members, key=lambda m: m["position"]["x"])
                 for a, b in zip(ordered, ordered[1:]):
                     tracks.append(self._create_manhattan_track(
-                        a["position"], b["position"], node
+                        pad_of.get((a["name"], node), a["position"]),
+                        pad_of.get((b["name"], node), b["position"]),
+                        node,
                     ))
                 continue
 
             # rail: drop each member straight down/up to its bus
             for m in members:
-                p = m["position"]
+                p = pad_of.get((m["name"], node), m["position"])
                 if abs(p["y"] - target_y) < 1.0:
                     continue
                 tracks.append({
@@ -498,6 +515,8 @@ class PCBGenerator:
         for tr in layout.get("layout", {}).get("tracks", []):
             pts = [tr["start"], tr.get("mid_point"), tr["end"]]
             pts = [(pt["x"] * S, pt["y"] * S) for pt in pts if pt]
+            # drop consecutive duplicates (degenerate zero-length segments)
+            pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
             if len(pts) < 2:
                 continue
             kind = tr.get("type", "signal")
