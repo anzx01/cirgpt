@@ -124,7 +124,10 @@ export default function PowerOnTest({ designId, hasIr }) {
             <Alert severity="info" sx={{ mb: 2 }}>
               已自动补跑上电瞬态仿真（窗口 {Math.round(result.transient.tstop_ms)} ms）：
               {Object.entries(result.transient.actuators).map(([ref, s]) => (
-                <span key={ref}> {ref} 导通占比 {(s.on_fraction * 100).toFixed(0)}%，翻转 {s.transitions} 次；</span>
+                <span key={ref}>
+                  {' '}{ref} 稳态导通占比 {(s.on_fraction * 100).toFixed(0)}%
+                  {s.freq_hz > 0 ? `，闪烁约 ${s.freq_hz}Hz` : ''}，翻转 {s.transitions} 次；
+                </span>
               ))}
             </Alert>
           )}

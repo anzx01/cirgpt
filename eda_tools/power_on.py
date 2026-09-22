@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import tempfile
 from pathlib import Path
@@ -479,27 +480,44 @@ def _driver_excluded(
     return "、".join(blocked) if blocked else None
 
 
-def _classify_transient(flags: List[bool], duration: float) -> Dict[str, Any]:
+def _classify_transient(times: List[float], flags: List[bool]) -> Dict[str, Any]:
     """Verdict one actuator's on/off series over the transient window.
 
-    Three or more edge crossings mean the actuator repeats (555-class
-    blinker); a single on-pulse is a one-shot, not a period.
+    Duty and frequency are measured edge-to-edge over the *complete* on/off
+    segments only (window head/tail are excluded by construction), taking the
+    median segment duration of each polarity. A 555's first pulse charges its
+    timing cap from 0 V, so it runs ln3/ln2 = 1.58x longer than every later
+    pulse (real silicon does this too); with a window of >=3.5 periods the
+    median simply discards that outlier instead of biasing the average.
     """
-    transitions = sum(1 for x, y in zip(flags, flags[1:]) if x != y)
-    cycles = transitions // 2
-    freq_hz = (cycles / duration) if duration > 0 and cycles else 0.0
-    on_fraction = (sum(flags) / len(flags)) if flags else 0.0
+    n = min(len(times), len(flags))
+    times, flags = times[:n], flags[:n]
+    raw_fraction = (sum(1 for f in flags if f) / n) if n else 0.0
+    edges = [i for i in range(1, n) if flags[i] != flags[i - 1]]
+    transitions = len(edges)
+    on_d: List[float] = []
+    off_d: List[float] = []
+    for k in range(transitions - 1):
+        seg = times[edges[k + 1]] - times[edges[k]]
+        (on_d if flags[edges[k]] else off_d).append(seg)
+    freq_hz = 0.0
+    steady_fraction = raw_fraction
+    if transitions >= 3 and on_d and off_d:
+        med_on = statistics.median(on_d)
+        period = med_on + statistics.median(off_d)
+        freq_hz = 1.0 / period if period > 0 else 0.0
+        steady_fraction = med_on / period if period > 0 else raw_fraction
     entry = {
-        "on_fraction": round(on_fraction, 4),
+        "on_fraction": round(steady_fraction, 4),
         "transitions": transitions,
         "freq_hz": round(freq_hz, 3),
     }
     if transitions >= 3:
         extra = f"约{freq_hz:.2f}Hz 闪烁" if freq_hz >= 0.01 else "交替动作"
         entry["verdict"] = f"瞬态上电后周期动作（{extra}）"
-    elif on_fraction >= 0.95:
+    elif raw_fraction >= 0.95:
         entry["verdict"] = "瞬态上电后持续动作（未随时间切换，请检查设计意图）"
-    elif on_fraction > 0:
+    elif raw_fraction > 0:
         entry["verdict"] = "瞬态上电后短暂动作后停止"
     else:
         entry["verdict"] = "瞬态上电后仍未动作（请检查驱动链路）"
@@ -538,7 +556,7 @@ def _transient_recheck(
         else:
             rsense = None
         if builder.has_timer:
-            tstop_ms, tstep_us = _TRAN_TIMER_TSTOP_MS, _TRAN_TIMER_TSTEP_US
+            tstop_ms, tstep_us = _timer_window_ms(ir), _TRAN_TIMER_TSTEP_US
         else:
             tstop_ms, tstep_us = _TRAN_TSTOP_MS, _TRAN_TSTEP_US
         with tempfile.TemporaryDirectory(prefix="cirgpt_recheck_") as workdir:
@@ -549,14 +567,13 @@ def _transient_recheck(
         return None
 
     node_count = len(_live_nodes(builder, 8))
-    duration = (time_axis[-1] - time_axis[0]) if len(time_axis) > 1 else 0.0
     stats: Dict[str, Dict[str, Any]] = {}
     for j, a in enumerate(builder.actuators):
         idx = node_count + j
         cur = series[idx] if idx < len(series) else []
         threshold = _LED_ON_A if a["kind"] == "led" else _LOAD_ON_A
         flags = [abs(v) > threshold for v in cur]
-        stats[str(a["ref"])] = _classify_transient(flags, duration)
+        stats[str(a["ref"])] = _classify_transient(time_axis, flags)
     return {"performed": True, "tstop_ms": tstop_ms, "actuators": stats}
 
 
@@ -580,10 +597,20 @@ _TRAN_TSTEP_US = 20.0   # suggested step
 _TRAN_TSTOP_MS = 20.0   # simulated window after power-on
 _TRAN_RAMP_MS = 1.0     # supply ramp 0V -> full in this time
 _MAX_POINTS = 800       # payload thinning for the JSON API
-# a timer IC oscillates far slower than RC edges: widen the window to ~2
-# periods of a 1 Hz-class blinker instead of millisecond-settling transients
+# a timer IC oscillates far slower than RC edges: the window must span >=3.5
+# periods so the median segment measurement in _classify_transient sees at
+# least three complete on/off segments past the (longer) power-on first pulse
 _TRAN_TIMER_TSTOP_MS = 2200.0
 _TRAN_TIMER_TSTEP_US = 2000.0
+_TRAN_TIMER_TSTOP_MAX_MS = 6000.0
+
+
+def _timer_window_ms(ir: Dict[str, Any]) -> float:
+    """Transient window sized to ~3.8 periods of the design's blink rate."""
+    f = _num((ir.get("constraints") or {}).get("target_frequency_hz"))
+    if f and f > 0:
+        return min(max(3.8 / f * 1000.0, _TRAN_TIMER_TSTOP_MS), _TRAN_TIMER_TSTOP_MAX_MS)
+    return _TRAN_TIMER_TSTOP_MS
 
 
 def _transient_deck(
@@ -843,7 +870,7 @@ def run_transient(ir: Dict[str, Any]) -> Dict[str, Any]:
     if not builder.lines:
         raise ValueError("没有可建模的元件")
     if builder.has_timer:
-        tstop_ms, tstep_us = _TRAN_TIMER_TSTOP_MS, _TRAN_TIMER_TSTEP_US
+        tstop_ms, tstep_us = _timer_window_ms(ir), _TRAN_TIMER_TSTEP_US
     else:
         tstop_ms, tstep_us = _TRAN_TSTOP_MS, _TRAN_TSTEP_US
 

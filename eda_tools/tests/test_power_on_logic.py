@@ -99,21 +99,44 @@ def test_transient_modelable_requires_timer_types():
 
 
 def test_classify_blinking_led():
+    # uniform 1 Hz blink sampled at dt=1/6s; duty/freq must come from
+    # edge-bounded segments, not raw point counting
+    times = [i / 6.0 for i in range(14)]
     flags = [False] * 2 + [True] * 3 + [False] * 3 + [True] * 3 + [False] * 3
-    e = _classify_transient(flags, 2.0)
+    e = _classify_transient(times, flags)
     assert e["verdict"].startswith("瞬态上电后周期动作"), e
-    assert "1.00Hz" in e["verdict"], e  # 2 full on/off cycles over the 2s window
+    assert "1.00Hz" in e["verdict"], e
+    assert e["on_fraction"] == 0.5, e  # steady duty, not the raw 6/14
+
+
+def test_classify_skips_poweron_startpulse_and_tail():
+    # real 555 shape: first ON runs 1.58x long (cap charges from 0 V) and
+    # the window tail clips the last OFF; steady duty/freq must stay ~50%/1Hz
+    dt = 0.01
+
+    def seg(state, secs):
+        return [state] * round(secs / dt)
+
+    flags = (seg(True, 0.80) + seg(False, 0.51) + seg(True, 0.50)
+             + seg(False, 0.51) + seg(True, 0.50) + seg(False, 0.30))
+    times = [i * dt for i in range(len(flags))]
+    e = _classify_transient(times, flags)
+    assert e["verdict"].startswith("瞬态上电后周期动作"), e
+    assert abs(e["on_fraction"] - 0.5) < 0.03, e
+    assert abs(e["freq_hz"] - 1.0) < 0.05, e
 
 
 def test_classify_single_pulse_is_not_periodic():
+    times = [i * 0.125 for i in range(16)]
     flags = [False] * 4 + [True] * 4 + [False] * 8
-    e = _classify_transient(flags, 2.0)
+    e = _classify_transient(times, flags)
     assert e["verdict"] == "瞬态上电后短暂动作后停止", e
+    assert e["freq_hz"] == 0.0, e
 
 
 def test_classify_steady_and_dead():
-    assert _classify_transient([True] * 10, 2.0)["verdict"].startswith("瞬态上电后持续动作")
-    assert _classify_transient([False] * 10, 2.0)["verdict"].startswith("瞬态上电后仍未动作")
+    assert _classify_transient([i * 0.2 for i in range(10)], [True] * 10)["verdict"].startswith("瞬态上电后持续动作")
+    assert _classify_transient([i * 0.2 for i in range(10)], [False] * 10)["verdict"].startswith("瞬态上电后仍未动作")
 
 
 def main() -> int:
