@@ -9,7 +9,7 @@ a visualization only - real manufacturing needs KiCad DRC (and a router).
 import logging
 import math
 import re
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,97 @@ def _pads_local(geom: Dict[str, Any]) -> List[Tuple[float, float, float, float]]
         for i in range(n):
             pads.append((-span / 2 + i * pitch, 0.0, pw, ph))
     return pads
+
+
+def _body_rects(
+    components: List[Dict[str, Any]], clearance: float = 0.0
+) -> List[Tuple[str, float, float, float, float]]:
+    """(name, x1, y1, x2, y2) keep-out rectangles around component bodies.
+
+    Zero clearance by design: THT pads sit exactly on their body edge, and
+    a vertical lane that merely touches body edges is a legal (and usual)
+    escape route - only the interior counts as piercing."""
+    rects = []
+    for comp in components:
+        bw, bh = _geom_for(comp.get("footprint", "")).get("body", (5.0, 2.5))
+        cx, cy = comp["position"]["x"], comp["position"]["y"]
+        rects.append(
+            (str(comp.get("name", "?")),
+             cx - bw / 2 - clearance, cy - bh / 2 - clearance,
+             cx + bw / 2 + clearance, cy + bh / 2 + clearance)
+        )
+    return rects
+
+
+def _channel_xs(
+    bodies: List[Tuple[str, float, float, float, float]],
+) -> List[float]:
+    """Mid-lines of the horizontal gaps between component columns."""
+    spans = sorted((bx1, bx2) for _n, bx1, _by1, bx2, _by2 in bodies)
+    merged: List[List[float]] = []
+    for x1, x2 in spans:
+        if merged and x1 <= merged[-1][1] + 0.01:
+            merged[-1][1] = max(merged[-1][1], x2)
+        else:
+            merged.append([x1, x2])
+    xs: List[float] = []
+    prev = 0.0
+    for x1, x2 in merged:
+        if x1 - prev > 1.0:
+            xs.append(round((prev + x1) / 2, 2))
+        prev = x2
+    xs.append(round(prev + 3.0, 2))
+    return xs
+
+
+def _row_channels(
+    bodies: List[Tuple[str, float, float, float, float]], board_h: float
+) -> List[float]:
+    """Mid-lines of the vertical gaps between component rows."""
+    spans = sorted((by1, by2) for _n, _bx1, by1, _bx2, by2 in bodies)
+    merged: List[List[float]] = []
+    for y1, y2 in spans:
+        if merged and y1 <= merged[-1][1] + 0.01:
+            merged[-1][1] = max(merged[-1][1], y2)
+        else:
+            merged.append([y1, y2])
+    chans: List[float] = []
+    prev = 0.0
+    for y1, y2 in merged:
+        if y1 - prev > 1.0:
+            chans.append(round((prev + y1) / 2, 2))
+        prev = y2
+    if board_h - prev > 1.0:
+        chans.append(round((prev + board_h) / 2, 2))
+    return chans
+
+
+def _seg_hits_body(x1: float, y1: float, x2: float, y2: float, rect) -> bool:
+    """Does an axis-aligned segment pass through the rectangle's interior?"""
+    _n, bx1, by1, bx2, by2 = rect
+    eps = 0.01
+    if abs(y1 - y2) < eps:  # horizontal
+        if not (by1 + eps < y1 < by2 - eps):
+            return False
+        return max(x1, x2) > bx1 + eps and min(x1, x2) < bx2 - eps
+    if abs(x1 - x2) < eps:  # vertical
+        if not (bx1 + eps < x1 < bx2 - eps):
+            return False
+        return max(y1, y2) > by1 + eps and min(y1, y2) < by2 - eps
+    return False
+
+
+def _segments_clear(
+    segs: List[Tuple[float, float, float, float]],
+    bodies: List[Tuple[str, float, float, float, float]],
+    exclude: Tuple[str, ...],
+) -> bool:
+    return not any(
+        _seg_hits_body(*seg, rect)
+        for seg in segs
+        for rect in bodies
+        if rect[0] not in exclude
+    )
 
 
 def _rotate(x: float, y: float, rotation: int) -> Tuple[float, float]:
@@ -373,6 +464,8 @@ class PCBGenerator:
             if components else 40
 
         tracks: List[Dict[str, Any]] = []
+        bodies = _body_rects(components)
+        row_channels = _row_channels(bodies, board_h)
 
         def bus(y: float, net: str) -> None:
             # 8mm inset clears the corner mounting holes (5mm inset, 1.6mm radius)
@@ -380,6 +473,7 @@ class PCBGenerator:
                 "start": {"x": 8.0, "y": y},
                 "end": {"x": board_w - 8.0, "y": y},
                 "mid_point": None,
+                "l_points": [],
                 "width": 1.0,
                 "layer": "F.Cu",
                 "net": net,
@@ -403,55 +497,147 @@ class PCBGenerator:
                 target_y = vcc_y
             else:
                 # signal net: chain members sorted along x to keep the
-                # Manhattan path short
+                # Manhattan path short, steering clear of other components'
+                # bodies (tracks over parts read as shorts even when
+                # electrically fine)
                 ordered = sorted(members, key=lambda m: m["position"]["x"])
                 for a, b in zip(ordered, ordered[1:]):
                     tracks.append(self._create_manhattan_track(
                         pad_of.get((a["name"], node), a["position"]),
                         pad_of.get((b["name"], node), b["position"]),
                         node,
+                        bodies=bodies,
+                        exclude=(a["name"], b["name"]),
+                        row_channels=row_channels,
+                        centers={c["name"]: (c["position"]["x"], c["position"]["y"]) for c in components},
+                        col_channels=_channel_xs(bodies),
                     ))
                 continue
 
-            # rail: drop each member straight down/up to its bus
+            # rail: drop each member to its bus - straight when the lane is
+            # clear, otherwise dogleg out to a clear channel first
             for m in members:
                 p = pad_of.get((m["name"], node), m["position"])
                 if abs(p["y"] - target_y) < 1.0:
                     continue
-                tracks.append({
+                drop = {
                     "start": {"x": p["x"], "y": p["y"]},
                     "end": {"x": p["x"], "y": target_y},
                     "mid_point": None,
+                    "l_points": [],
                     "width": 0.4,
                     "layer": "F.Cu",
                     "net": "VCC" if target_y == vcc_y else "GND",
                     "type": "power",
-                })
+                }
+                if not _segments_clear(
+                    [(p["x"], p["y"], p["x"], target_y)], bodies, (m["name"],)
+                ):
+                    for ch_x in sorted(_channel_xs(bodies), key=lambda c: abs(c - p["x"])):
+                        segs = [
+                            (p["x"], p["y"], ch_x, p["y"]),
+                            (ch_x, p["y"], ch_x, target_y),
+                        ]
+                        if _segments_clear(segs, bodies, (m["name"],)):
+                            drop = {
+                                "start": {"x": p["x"], "y": p["y"]},
+                                "end": {"x": ch_x, "y": target_y},
+                                "mid_point": None,
+                                "l_points": [{"x": ch_x, "y": p["y"]}],
+                                "width": 0.4,
+                                "layer": "F.Cu",
+                                "net": "VCC" if target_y == vcc_y else "GND",
+                                "type": "power",
+                            }
+                            break
+                tracks.append(drop)
 
         logger.info(f"Generated {len(tracks)} tracks")
         return tracks
 
     def _create_manhattan_track(
-        self, pos1: Dict, pos2: Dict, net: str
+        self, pos1: Dict, pos2: Dict, net: str,
+        bodies: Optional[List[Tuple[str, float, float, float, float]]] = None,
+        exclude: Tuple[str, ...] = (),
+        row_channels: Optional[List[float]] = None,
+        centers: Optional[Dict[str, Tuple[float, float]]] = None,
+        col_channels: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
         """
-        Create Manhattan routing track (horizontal + vertical segments)
+        Create a Manhattan track between two pads.
+
+        The preferred shape is the highway: each pad exits AWAY from its
+        own component into a column channel, the run crosses on a row
+        channel, and the far pad is entered from its own outward channel -
+        nothing ever crosses a component body. L and simple Z shapes are
+        fallbacks; the first fully clear candidate wins.
         """
-        dx = abs(pos2["x"] - pos1["x"])
-        dy = abs(pos2["y"] - pos1["y"])
+        x1, y1 = pos1["x"], pos1["y"]
+        x2, y2 = pos2["x"], pos2["y"]
 
-        # Route along the dominant axis first for a natural L shape
-        mid_x = pos1["x"] if dx < dy else pos2["x"]
-        mid_y = pos2["y"] if dx < dy else pos1["y"]
+        def segs_of(points: List[Tuple[float, float]]) -> List[Tuple[float, float, float, float]]:
+            return [(a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:])]
 
+        def length_of(points: List[Tuple[float, float]]) -> float:
+            return round(sum(
+                abs(b[0] - a[0]) + abs(b[1] - a[1])
+                for a, b in zip(points, points[1:])
+            ), 2)
+
+        def clear(points: List[Tuple[float, float]]) -> bool:
+            if bodies is None:
+                return True
+            return _segments_clear(segs_of(points), bodies, ())
+
+        candidates: List[List[Tuple[float, float]]] = []
+
+        # highway: outward exits into column channels, cross on a row channel
+        if bodies and row_channels and col_channels and centers:
+            ca = centers.get(exclude[0]) if len(exclude) > 0 else None
+            cb = centers.get(exclude[1]) if len(exclude) > 1 else None
+
+            def outward(ch_x: float, pad_x: float, center) -> bool:
+                if center is None:
+                    return True
+                return (ch_x - pad_x) * (pad_x - center[0]) > 0
+
+            ga = [c for c in col_channels if outward(c, x1, ca)]
+            gb = [c for c in col_channels if outward(c, x2, cb)]
+            for a_ch in sorted(ga or col_channels, key=lambda c: abs(c - x1))[:2]:
+                for b_ch in sorted(gb or col_channels, key=lambda c: abs(c - x2))[:2]:
+                    for ch_y in sorted(
+                        row_channels, key=lambda c: abs(c - (y1 + y2) / 2)
+                    )[:2]:
+                        candidates.append([
+                            (x1, y1), (a_ch, y1), (a_ch, ch_y),
+                            (b_ch, ch_y), (b_ch, y2), (x2, y2),
+                        ])
+
+        candidates.extend([
+            [(x1, y1), (x2, y1), (x2, y2)],
+            [(x1, y1), (x1, y2), (x2, y2)],
+        ])
+        # dominant-axis L first for a natural shape
+        if abs(y2 - y1) > abs(x2 - x1):
+            candidates[2], candidates[3] = candidates[3], candidates[2]
+        # Z detours through the row gaps (nearest channel first)
+        if bodies and row_channels:
+            for ch_y in sorted(
+                row_channels, key=lambda c: abs(c - (y1 + y2) / 2)
+            ):
+                candidates.append([(x1, y1), (x1, ch_y), (x2, ch_y), (x2, y2)])
+
+        chosen = next((c for c in candidates if clear(c)), candidates[0])
+        mids = [{"x": px, "y": py} for px, py in chosen[1:-1]]
         return {
-            "start": {"x": pos1["x"], "y": pos1["y"]},
-            "end": {"x": pos2["x"], "y": pos2["y"]},
-            "mid_point": {"x": mid_x, "y": mid_y},
+            "start": {"x": x1, "y": y1},
+            "end": {"x": x2, "y": y2},
+            "mid_point": mids[0] if len(mids) == 1 else None,
+            "l_points": mids,
             "width": 0.5,  # mm
             "layer": "F.Cu",
             "net": net,
-            "length": round(dx + dy, 2),
+            "length": length_of(chosen),
             "type": "signal"
         }
 
@@ -513,7 +699,10 @@ class PCBGenerator:
 
         # tracks (under the parts)
         for tr in layout.get("layout", {}).get("tracks", []):
-            pts = [tr["start"], tr.get("mid_point"), tr["end"]]
+            mids = tr.get("l_points")
+            if not mids and tr.get("mid_point"):
+                mids = [tr["mid_point"]]
+            pts = [tr["start"]] + (mids or []) + [tr["end"]]
             pts = [(pt["x"] * S, pt["y"] * S) for pt in pts if pt]
             # drop consecutive duplicates (degenerate zero-length segments)
             pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
