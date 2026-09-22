@@ -220,6 +220,12 @@ def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         return ("Amplifier_Operational", "LM358")
     if t == "microcontroller":
         return ("MCU_Microchip_ATmega", "ATmega328P-P")
+    if t in _SOURCE_TYPES:
+        # a supply drawn as a connector reads as "no power source here";
+        # the SPICE DC source symbol carries + / - and the voltage value
+        return ("Simulation_SPICE", "VDC")
+    if t == "signal_source":
+        return ("Simulation_SPICE", "VSIN")
     if t == "test_point":
         return ("Connector", "TestPoint")
     if t == "connector":
@@ -1504,10 +1510,11 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
         env=_server_env(kicad_root, kicad_cli),
     )
 
+    # supplies are placed too (as Simulation_SPICE source symbols): a
+    # schematic whose 9V battery exists only as VCC labels reads as
+    # "missing the power source"
     components = [
-        comp
-        for comp in ir.get("components", [])
-        if isinstance(comp, dict) and str(comp.get("type") or "").lower() not in _SOURCE_TYPES
+        comp for comp in ir.get("components", []) if isinstance(comp, dict)
     ]
     placed: List[Tuple[Dict[str, Any], str, str]] = []  # (comp, lib, sym)
     skipped: List[str] = []
