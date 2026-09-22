@@ -193,7 +193,7 @@ class CircuitService:
             # Step 6: Generate BOM
             await self._update_progress(progress_callback, design_id,
                                        "Generating bill of materials", 95)
-            bom_result = await self._generate_bom(netlist, f"Circuit_{design_id}")
+            bom_result = await self._generate_bom(netlist, circuit_ir, f"Circuit_{design_id}")
 
             validation = self._build_validation_report(
                 circuit_ir,
@@ -427,12 +427,15 @@ class CircuitService:
 
         return response.json()
 
-    async def _generate_bom(self, netlist: str, design_name: str) -> Dict[str, Any]:
+    async def _generate_bom(
+        self, netlist: str, circuit_ir: Optional[Dict[str, Any]], design_name: str
+    ) -> Dict[str, Any]:
         """
         Generate BOM using EDA service
 
         Args:
-            netlist: SPICE netlist
+            netlist: SPICE netlist (fallback when no CircuitIR exists)
+            circuit_ir: CircuitIR - the single source of truth when present
             design_name: Design name
 
         Returns:
@@ -441,9 +444,14 @@ class CircuitService:
         logger.info("Generating BOM with EDA service")
 
         http_client = get_http_client()
+        payload: Dict[str, Any] = {"design_name": design_name}
+        if circuit_ir:
+            payload["circuit_ir"] = circuit_ir
+        else:
+            payload["netlist"] = netlist
         response = await http_client.post(
             f"{self.eda_service_url}/eda/bom",
-            json={"netlist": netlist, "design_name": design_name}
+            json=payload
         )
 
         if response.status_code != 200:

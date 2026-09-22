@@ -74,7 +74,8 @@ class PCBRequest(BaseModel):
 
 class BOMRequest(BaseModel):
     """Request for BOM generation"""
-    netlist: str
+    netlist: Optional[str] = None
+    circuit_ir: Optional[Dict[str, Any]] = None
     design_name: str = "Circuit"
 
 
@@ -361,8 +362,12 @@ async def generate_pcb_endpoint(request: PCBRequest) -> Dict[str, Any]:
     try:
         logger.info("Generating PCB layout")
 
+        # With a CircuitIR available it is the single source of truth: the
+        # netlist is derived from it so the PCB tab describes the same
+        # circuit as the schematic tab. Stored SPICE decks can be stale
+        # macro-model variants (RA/RB/X1 vs the IR's R1/R2/U1).
         netlist = request.netlist
-        if not netlist and request.circuit_ir:
+        if request.circuit_ir:
             netlist = generate_spice_netlist(request.circuit_ir)
         if not netlist:
             raise ValueError("Either netlist or circuit_ir is required")
@@ -399,7 +404,12 @@ async def generate_bom_endpoint(request: BOMRequest) -> Dict[str, Any]:
     try:
         logger.info("Generating BOM")
 
-        bom = generate_bom(request.netlist, request.design_name)
+        bom_netlist = request.netlist
+        if request.circuit_ir:
+            bom_netlist = generate_spice_netlist(request.circuit_ir)
+        if not bom_netlist:
+            raise ValueError("Either netlist or circuit_ir is required")
+        bom = generate_bom(bom_netlist, request.design_name)
 
         return {
             "success": True,

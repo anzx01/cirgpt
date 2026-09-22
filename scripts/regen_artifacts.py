@@ -22,7 +22,7 @@ async def refresh(svc: CircuitService, design: CircuitDesign) -> dict:
     sch = await svc._generate_schematic(design.netlist, design.circuit_ir)
     sim = await svc._simulate_circuit(design.netlist, design.circuit_ir)
     pcb = await svc._generate_pcb(design.netlist, design.circuit_ir)
-    bom = await svc._generate_bom(design.netlist, f"Circuit_{design.id}")
+    bom = await svc._generate_bom(design.netlist, design.circuit_ir, f"Circuit_{design.id}")
     validation = svc._build_validation_report(design.circuit_ir, sim, pcb, sch)
     artifacts = svc._build_artifacts(
         netlist=design.netlist,

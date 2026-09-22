@@ -150,85 +150,70 @@ def _rc_netlist(ir: Dict[str, Any]) -> str:
 
 
 def _timer_netlist(ir: Dict[str, Any]) -> str:
-    """Real NE555 astable netlist with an embedded behavioral macro-model.
+    """NE555 astable netlist built component-by-component from the IR.
 
-    Component values are recovered from the IR by node signature (RA: VCC-DISCH,
-    RB: DISCH-THRES, C1: THRES-GND) so free-form parser output still maps
-    correctly; sensible astable defaults cover anything missing.
+    Refs, values and nets come straight from the CircuitIR so the netlist,
+    the MCP schematic and the BOM/PCB previews all describe the same
+    circuit; the embedded NE555 macro-model is simulation scaffolding.
     """
     comps = ir.get("components", [])
+    _TIMER_TYPES = {"timer_ic", "ne555", "555", "ic_555", "ne555_timer", "timer"}
+    # subckt pin order -> DIP8 pin number of the IR positional nodes
+    _SUBCKT_PINS = {"VCC": 8, "GND": 1, "TRIG": 2, "OUT": 3,
+                    "RESETN": 4, "CTRL": 5, "THRES": 6, "DISCH": 7}
 
-    supply = _value(_role(ir, "supply"), 9.0)
-    ra = 10_000.0
-    rb = 47_000.0
-    timing_caps: list[float] = []
-    has_led = False
-    rled = 470.0
+    timer_ref = ""
+    x_args: dict = {}
+    lines = _header(ir)
+    lines.extend([
+        "* NE555 astable multivibrator (behavioral macro-model)",
+        "",
+    ])
+
+    def ref_of(c: Dict[str, Any], fallback: str) -> str:
+        raw = str(c.get("ref") or fallback)
+        return "".join(ch for ch in raw if ch.isalnum() or ch in "_") or fallback
 
     for c in comps:
-        nodes = {str(n).upper() for n in (c.get("nodes") or [])}
-        ctype = (c.get("type") or "").lower()
+        ctype = str(c.get("type") or "").lower()
+        nodes = [_safe_node(n) for n in (c.get("nodes") or [])]
         try:
             val = float(c.get("value") or 0)
         except (TypeError, ValueError):
             val = 0.0
-        if ctype in {"dc_voltage_source", "dc_source", "voltage_source"} and val > 0:
-            supply = val
-        elif ctype == "resistor" and val > 0:
-            if {"VCC", "DISCH"} <= nodes:
-                ra = val
-            elif "DISCH" in nodes and (nodes & {"THRES", "THR", "TRIG"}):
-                rb = val
-            elif "OUT" in nodes and "VCC" not in nodes:
-                rled = val
-        elif ctype == "capacitor" and val > 0:
-            if (nodes & {"THRES", "THR", "TRIG"}) and "0" in nodes:
-                timing_caps.append(val)
+        ref = ref_of(c, "X")
+        if ctype in {"dc_voltage_source", "dc_source", "voltage_source", "battery"}:
+            lines.append(f"{ref} {nodes[0]} {nodes[1]} DC {val:g}")
+        elif ctype == "resistor":
+            lines.append(f"{ref} {nodes[0]} {nodes[1]} {_spice_value(val, 'ohm')}")
+        elif ctype in {"capacitor", "cap"}:
+            lines.append(f"{ref} {nodes[0]} {nodes[1]} {_spice_value(val, 'F')}")
         elif ctype == "led":
-            has_led = True
+            lines.append(f"{ref} {nodes[0]} {nodes[1]} LED")
+        elif ctype in _TIMER_TYPES:
+            timer_ref = ref
+            for name, dip in _SUBCKT_PINS.items():
+                if dip <= len(nodes):
+                    x_args[name] = nodes[dip - 1]
 
-    ct = max(timing_caps) if timing_caps else 10e-6
-
-    period = 0.693 * (ra + 2 * rb) * ct
-    duration = max(period * 4.0, 2e-3)
-    step = max(period / 200.0, 1e-6)
-    freq = 1.0 / period if period > 0 else 0.0
-
-    lines = _header(ir)
+    if timer_ref:
+        args = " ".join(x_args.get(k, "NC") for k in
+                        ("VCC", "GND", "TRIG", "OUT", "RESETN", "CTRL", "THRES", "DISCH"))
+        lines.append(f"X{timer_ref} {args} NE555")
     lines.extend([
-        "* Real NE555 astable multivibrator (behavioral macro-model)",
-        f"* f = 1/(ln(2)*(RA+2*RB)*C1) = {freq:.3g} Hz",
-        "",
-        f"V1 VCC 0 DC {supply:g}",
-        f"RA VCC DISCH {_spice_value(ra, 'ohm')}",
-        f"RB DISCH THR {_spice_value(rb, 'ohm')}",
-        f"C1 THR 0 {_spice_value(ct, 'F')}",
-        "C2 CTRL 0 10n",
-        "R3 RESET VCC 10k",
-        "X1 VCC 0 THR OUT RESET CTRL THR DISCH NE555",
-    ])
-    if has_led:
-        lines.extend([
-            f"RL1 OUT LED_A {_spice_value(rled, 'ohm')}",
-            "D1 LED_A 0 LED",
-            ".model LED D(Is=1e-12 Rs=10 N=1.8 Cjo=10p Vj=2.0)",
-        ])
-    lines.extend([
-        ".print tran v(OUT) v(THR)",
+        ".model LED D(Is=1e-12 Rs=10 N=1.8 Cjo=10p Vj=2.0)",
+        ".print tran v(OUT)",
         ".model SW555 sw vt=2.5 roff=10meg ron=10",
         "",
         "* NE555 behavioral macro-model",
         "* pins: VCC GND TRIG OUT RESETn CTRL THRES DISCH",
-        "* internal 3x5k divider biases CTRL to 2/3 VCC when the pin floats",
         ".subckt NE555 VCC GND TRIG OUT RESETN CTRL THRES DISCH",
         "RDIV1 VCC CTRL 5k",
         "RDIV2 CTRL MID 5k",
         "RDIV3 MID GND 5k",
-        "* comparators: set when TRIG < CTRL/2, reset when THRES > CTRL",
         "BSET SETN 0 V = (V(TRIG) < V(CTRL)/2) * V(VCC)",
         "BRST RSTN 0 V = (V(THRES) > V(CTRL)) * V(VCC)",
         "BRES RESN 0 V = (V(RESETN) < 0.7) * V(VCC)",
-        "* SR latch: cross-coupled switch inverters (QA high = OUT high)",
         "RLA VCC QA 10k",
         "SLA QA 0 QB 0 SW555",
         "RLB VCC QB 10k",
@@ -236,16 +221,14 @@ def _timer_netlist(ir: Dict[str, Any]) -> str:
         "SSET QA VCC SETN 0 SW555",
         "SRST QA 0 RSTN 0 SW555",
         "SRES QA 0 RESN 0 SW555",
-        "* output stage stand-in",
         "BOUT OUT 0 V = V(QA)",
-        "* open-collector discharge: ON while OUT is low (QB high)",
         "SDIS DISCH 0 QB 0 SW555",
         ".ends",
         "",
-        f".tran {step:g} {duration:g}",
+        ".tran 2m 4",
         ".end",
     ])
-    return "\n".join(lines)
+    return chr(10).join(lines)
 
 
 def _opamp_netlist(ir: Dict[str, Any]) -> str:
