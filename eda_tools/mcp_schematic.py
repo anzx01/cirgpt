@@ -908,16 +908,22 @@ def _plan_wire_routes(
         if len(unique) >= 2:
             net_points[name] = unique
 
-    # Gutter trunk slots between (and beside) the component columns.
+    # Gutter trunk slots between (and beside) the component columns. Trunk
+    # x positions must sit on KiCad's 1.27 mm connection grid: ERC flags
+    # every off-grid wire endpoint (endpoint_off_grid), and pin coordinates
+    # are already grid-clean because they come from the placed symbols.
+    def _snap_grid(v: float) -> float:
+        return round(round(v / 1.27) * 1.27, 2)
+
     slots: List[float] = []
     centers = sorted(columns_x) or [100.0]
-    slots.append(centers[0] - 25.0)
+    slots.append(_snap_grid(centers[0] - 25.0))
     for a, b in zip(centers, centers[1:]):
-        middle = (a + b) / 2.0
+        middle = _snap_grid((a + b) / 2.0)
         for off in (0.0, 2.54, -2.54, 5.08, -5.08, 7.62, -7.62):
-            slots.append(middle + off)
-    slots.append(centers[-1] + 25.0)
-    slots = [round(s, 3) for s in slots]
+            slots.append(round(middle + off, 2))
+    slots.append(_snap_grid(centers[-1] + 25.0))
+    slots = sorted(set(slots))
 
     plans: Dict[str, Dict[str, Any]] = {}
     used_slots: Set[float] = set()

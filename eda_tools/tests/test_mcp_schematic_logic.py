@@ -275,6 +275,33 @@ def test_label_stub_length_covers_text():
     assert _label_stub_len("N1") == 5.08
 
 
+def test_wire_route_trunks_on_kicad_grid():
+    # Gutter trunk slots (outer 25mm gutters, column midpoints) must snap
+    # to KiCad's 1.27mm connection grid - ERC flags every off-grid wire
+    # endpoint as endpoint_off_grid. Pin positions are grid-clean, so a
+    # clean trunk keeps the whole route clean.
+    ir_nets = [
+        {"name": "IN", "connections": ["V1.1", "R1.1"]},
+        {"name": "OUT", "connections": ["R1.2", "C1.1"]},
+    ]
+    pins = {
+        ("V1", "1"): (44.45, 59.69),
+        ("R1", "1"): (49.53, 59.69),
+        ("R1", "2"): (49.53, 97.79),
+        ("C1", "1"): (49.53, 105.41),
+        # a pin far right so the outer gutter slot (center+25) is chosen
+        ("C1", "2"): (105.41, 105.41),
+    }
+    plans = _plan_wire_routes(ir_nets, {"V1", "R1", "C1"}, {}, pins, [50.0, 63.5])
+    assert plans, "expected at least one routed net"
+    for plan in plans.values():
+        for seg in plan["segments"]:
+            for v in seg:
+                assert abs(v / 1.27 - round(v / 1.27)) < 1e-6, f"off-grid {seg}"
+        for jx, jy in plan["junctions"]:
+            assert abs(jx / 1.27 - round(jx / 1.27)) < 1e-6, f"off-grid junction {(jx, jy)}"
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):
