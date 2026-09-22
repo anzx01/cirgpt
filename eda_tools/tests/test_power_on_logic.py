@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from power_on import (  # noqa: E402
+    _Builder,
     _classify_transient,
     _driver_excluded,
     _ref_transient_modelable,
@@ -96,6 +97,61 @@ def test_transient_modelable_requires_timer_types():
     assert _ref_transient_modelable(ir, ["U9"]) is False
     assert _ref_transient_modelable(ir, ["U1", "U9"]) is False
     assert _ref_transient_modelable(ir, ["MISSING"]) is False
+
+
+def test_signal_source_modeled_as_dc_excitation():
+    # rc-filter class designs drive themselves with a signal_source; it must
+    # become the DC excitation instead of being skipped (which left every
+    # node at 0V while claiming a default 12V rail that connects nowhere)
+    rc = {
+        "components": [
+            {"ref": "V1", "type": "signal_source", "value": 1.0, "nodes": ["IN", "0"]},
+            {"ref": "R1", "type": "resistor", "value": 10000.0, "nodes": ["IN", "OUT"]},
+            {"ref": "C1", "type": "capacitor", "value": 15.9e-9, "nodes": ["OUT", "0"]},
+        ],
+        "nets": [],
+    }
+    b = _Builder(rc)
+    b.build()
+    assert any(ln.startswith("VV1 IN 0 DC 1") for ln in b.lines), b.lines
+    assert b.sources == ["VV1"], b.sources
+    assert b.skipped == [], b.skipped
+    assert not any("默认按" in a for a in b.assumptions), b.assumptions
+    assert any("仿真 Tab" in a for a in b.assumptions), b.assumptions
+
+
+def test_ideal_opamp_maps_pins_and_negative_rail():
+    # inverting amp: IN+ is tied to ground (a real net, must survive the
+    # signal-pin filter); the negative rail becomes the model's reference
+    inv = {
+        "components": [
+            {"ref": "U1", "type": "ideal_opamp", "value": "IDEAL",
+             "nodes": ["0", "SUM", "OUT", "VCC", "VEE"]},
+            {"ref": "R1", "type": "resistor", "value": 10000.0, "nodes": ["IN", "SUM"]},
+            {"ref": "R2", "type": "resistor", "value": 100000.0, "nodes": ["OUT", "SUM"]},
+            {"ref": "V1", "type": "signal_source", "value": 0.1, "nodes": ["IN", "0"]},
+            {"ref": "VCC", "type": "voltage_source", "value": 15.0, "nodes": ["VCC", "0"]},
+            {"ref": "VEE", "type": "voltage_source", "value": -15.0, "nodes": ["VEE", "0"]},
+        ],
+        "nets": [],
+    }
+    b = _Builder(inv)
+    b.build()
+    assert "XU1 0 SUM OUT VCC VEE PW_OPAMP" in b.lines, b.lines
+    assert b.skipped == [], b.skipped
+
+    # comparator keeps its single-supply ground reference
+    cmp_ir = {
+        "components": [
+            {"ref": "U1", "type": "comparator", "value": "LM393",
+             "nodes": ["SENSE", "THRESH", "CTRL", "VCC", "0"]},
+            {"ref": "VCC", "type": "voltage_source", "value": 12.0, "nodes": ["VCC", "0"]},
+        ],
+        "nets": [],
+    }
+    b2 = _Builder(cmp_ir)
+    b2.build()
+    assert "XU1 SENSE THRESH CTRL VCC 0 PW_LM393" in b2.lines, b2.lines
 
 
 def test_classify_blinking_led():

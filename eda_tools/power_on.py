@@ -84,8 +84,11 @@ S1   OUT VGND NCTL VGND PW_SWOC
 .model PW_SWOC SW(VT=0.5 VH=0.05 RON=2 ROFF=100MEG)
 .ends
 .subckt PW_OPAMP INP INN OUT VCC VGND
+* behavioural amplifier, gain 2000, tanh soft-saturation centred on the
+* supply midpoint. Hard clamps (and this ngspice build's limit()) either
+* misbehave or wreck DC convergence; the smooth transfer does neither.
 RIN INP INN 1MEG
-BOUT OUT VGND V = limit(200k*V(INP,INN), 0.2, V(VCC,VGND)-0.2)
+BOUT OUT VGND V = V(VCC,VGND)/2 + (V(VCC,VGND)-0.4)/2 * tanh( 2*2000*V(INP,INN)/(V(VCC,VGND)-0.4) )
 .ends
 .subckt PW_555 TRIG THR DIS OUT RST CTRL VCC VGND
 * astable behavioural NE555. Latch state lives on CNQ: set/reset conditions
@@ -219,6 +222,20 @@ class _Builder:
             self.sources.append(f"V{ref}")
             return
 
+        if t == "signal_source":
+            # the design's input excitation (rc filter / opamp inputs): hold it
+            # at its DC level for the operating point - AC/frequency behaviour
+            # belongs to the simulation tab, not the power-on test
+            volts = _num(comp.get("value"), 1.0)
+            if len(nd) < 2:
+                raise ValueError("信号源缺少两个节点")
+            line.append(f"V{ref} {nd[0]} {nd[1]} DC {_fmt(volts)}")
+            self.sources.append(f"V{ref}")
+            self.assumptions.append(
+                f"{comp.get('ref')} 信号源按直流 {_fmt(volts)}V 稳态上电（交流/频率特性请看仿真 Tab）"
+            )
+            return
+
         if t == "resistor":
             ohms = _num(comp.get("value"), 10000.0)
             if _num(comp.get("value")) is None:
@@ -289,19 +306,23 @@ class _Builder:
             line.append(f"Q{ref} {nd[0]} {nd[1]} {nd[2]} {model}")
             return
 
-        if t in {"comparator", "comparator_ic", "opamp"}:
+        if t in {"comparator", "comparator_ic", "opamp", "ideal_opamp"}:
             rails = [n for n in nd if _is_rail(n)]
-            gnds = [n for n in nd if _is_gnd(n)]
-            signals = [n for n in nd if not _is_rail(n) and not _is_gnd(n)]
+            # first three non-rail pins in IR order carry IN+ IN- OUT; a
+            # grounded IN+ stays a real net (inverting amps really tie it
+            # to 0), so gnd nets are allowed among the signal pins
+            signals = [n for n in nd if not _is_rail(n)]
             if len(signals) < 3 or not rails:
                 raise ValueError("IC 引脚无法区分输入/输出/电源")
             subckt = "PW_LM393" if t.startswith("comp") else "PW_OPAMP"
             vcc = rails[0]
-            vgnd = gnds[0] if gnds else "0"
+            neg = next((n for n in nd[3:] if re.match(r"^(v-|vee|vss)", n, re.I)), None)
+            vgnd = neg or next((n for n in nd if _is_gnd(n)), "0")
             # IR order for signal pins: IN+, IN-, OUT
             line.append(f"X{ref} {signals[0]} {signals[1]} {signals[2]} {vcc} {vgnd} {subckt}")
             self.assumptions.append(
                 f"{comp.get('ref')} ({v or t}) 按{'开漏比较器' if subckt == 'PW_LM393' else '行为级运放'}模型连接（IN+ IN- OUT 顺序取自 IR）"
+                + ("，输出摆幅以负轨为参考" if neg else "")
             )
             return
 
