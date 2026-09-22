@@ -16,7 +16,13 @@ import {
   Tab,
   CircularProgress,
   Stack,
-  Divider
+  Divider,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow
 } from '@mui/material';
 import {
   Description as DescriptionIcon,
@@ -508,6 +514,40 @@ export default function DesignResultPage() {
                   ))}
                 </Stack>
               </Alert>
+            )}
+
+            {design?.validation?.erc?.violations?.length > 0 && (
+              <>
+                <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                  KiCad ERC 明细
+                </Typography>
+                <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mb: 3 }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell width={90}>级别</TableCell>
+                        <TableCell width={260}>类型</TableCell>
+                        <TableCell>说明</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {design.validation.erc.violations.map((v, i) => (
+                        <TableRow key={i}>
+                          <TableCell>
+                            <Chip
+                              size="small"
+                              color={v.severity === 'error' ? 'error' : 'warning'}
+                              label={v.severity === 'error' ? '错误' : '警告'}
+                            />
+                          </TableCell>
+                          <TableCell>{v.type}</TableCell>
+                          <TableCell>{v.description}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
             )}
 
             <Divider sx={{ my: 3 }} />
