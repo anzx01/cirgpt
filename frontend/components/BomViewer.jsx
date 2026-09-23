@@ -25,6 +25,53 @@ import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { downloadFile } from '../lib/downloadUtils';
 
+// BOM 类型中文标签（CSV 保持英文，便于导入采购系统）
+const TYPE_LABELS = {
+  Resistor: '电阻',
+  Capacitor: '电容',
+  Inductor: '电感',
+  Diode: '二极管',
+  'TVS Diode': 'TVS 二极管',
+  LED: 'LED',
+  Transistor: '晶体管',
+  IC: '集成电路',
+  Switch: '开关',
+  Connector: '连接器',
+  Relay: '继电器',
+  Motor: '电机/负载',
+  Module: '模块',
+  Sensor: '传感器',
+  Fuse: '保险丝',
+  'Voltage Source': '电压源',
+  'Current Source': '电流源',
+};
+
+const typeLabel = (t) => TYPE_LABELS[t] || t || '其他';
+
+// IR/SPICE 的原始数值（欧姆/法拉）转工程单位，0.0001 → 100µF 这种
+// 科学计数法人类不可读
+function formatValue(type, value) {
+  const raw = String(value ?? '');
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n) || raw.trim() === '') return raw;
+  const fmt = (x) => {
+    const s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2);
+    return s.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+  };
+  if (type === 'Capacitor') {
+    if (n >= 1e-3) return `${fmt(n / 1e-3)} mF`;
+    if (n >= 1e-6) return `${fmt(n / 1e-6)} µF`;
+    return `${fmt(n * 1e9)} nF`;
+  }
+  if (type === 'Resistor' || type === 'Inductor') {
+    const unit = type === 'Resistor' ? 'Ω' : 'H';
+    if (n >= 1e6) return `${fmt(n / 1e6)} M${unit}`;
+    if (n >= 1e3) return `${fmt(n / 1e3)} k${unit}`;
+    return `${fmt(n)} ${unit}`;
+  }
+  return raw;
+}
+
 // 移动端元件卡片组件
 function ComponentCard({ entry, index }) {
   const [expanded, setExpanded] = useState(false);
@@ -42,7 +89,7 @@ function ComponentCard({ entry, index }) {
               {entry.designator}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {entry.component_type} - {entry.value}
+              {typeLabel(entry.component_type)} - {formatValue(entry.component_type, entry.value)}
             </Typography>
           </Box>
           <Box sx={{ textAlign: 'right' }}>
@@ -235,8 +282,8 @@ export default function BomViewer({ bom }) {
                       {entry.designator}
                     </TableCell>
                     <TableCell>{entry.quantity}</TableCell>
-                    <TableCell>{entry.component_type}</TableCell>
-                    <TableCell>{entry.value}</TableCell>
+                    <TableCell>{typeLabel(entry.component_type)}</TableCell>
+                    <TableCell>{formatValue(entry.component_type, entry.value)}</TableCell>
                     <TableCell>{entry.footprint}</TableCell>
                     <TableCell align="right">{formatPrice(entry.unit_price)}</TableCell>
                     <TableCell align="right">{formatPrice(entry.total_price)}</TableCell>
@@ -295,7 +342,7 @@ export default function BomViewer({ bom }) {
               <Grid item xs={6} md={3} key={type}>
                 <Box sx={{ bgcolor: 'grey.50', p: 1, borderRadius: 1 }}>
                   <Typography variant="caption" color="text.secondary">
-                    {type}
+                    {typeLabel(type)}
                   </Typography>
                   <Typography variant="body2" fontWeight="bold">
                     {data.count} 个 / ${data.cost.toFixed(2)}

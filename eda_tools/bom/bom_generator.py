@@ -23,6 +23,33 @@ _REAL_MPN = {
     "AMS1117-3.3": ("AMS1117-3.3 (SOT-223)", "SMD, SOT-223", 0.15),
 }
 
+# IR 类型 -> BOM 类别。IR 里的语义类型比参考前缀可靠（led 不是二极管、
+# fuse 不是未知件、tvs_diode 与整流二极管封装完全不同）。
+_IR_BOM_TYPES = {
+    "resistor": "Resistor",
+    "capacitor": "Capacitor",
+    "inductor": "Inductor",
+    "led": "LED",
+    "diode": "Diode",
+    "tvs_diode": "TVS Diode",
+    "zener_diode": "Diode",
+    "schottky_diode": "Diode",
+    "transistor": "Transistor",
+    "mosfet": "Transistor",
+    "connector": "Connector",
+    "fuse": "Fuse",
+    "switch": "Switch",
+    "motor": "Motor",
+    "pump": "Motor",
+    "sensor": "Sensor",
+    "mcu_module_esp32c3": "IC",
+    "usb_c_power_connector": "Connector",
+    "ldo_ams1117": "IC",
+}
+
+# 功率 MOSFET 常见型号（TO-220/TO-252 族），信号管才是 TO-92
+_POWER_FET_RE = re.compile(r"^(irlz|irf|irl|stp|fqp|sup|buk|aod|ao)", re.I)
+
 
 class BOMGenerator:
     """Generate Bill of Materials from netlist"""
@@ -116,7 +143,7 @@ class BOMGenerator:
             if not ref:
                 continue
             value = str(comp.get("model") or comp.get("value") or t or ref)
-            comp_type = self._get_component_type(ref, value)
+            comp_type = _IR_BOM_TYPES.get(t) or self._get_component_type(ref, value)
             components.append({
                 "reference": ref,
                 "type": comp_type,
@@ -227,6 +254,7 @@ class BOMGenerator:
             "U": "IC",
             "J": "Connector",
             "K": "Relay",
+            "F": "Fuse",
             "M": "Motor",
             "X": "Module",
             "V": "Voltage Source",
@@ -341,7 +369,7 @@ class BOMGenerator:
                 "quantity": comp["quantity"],
                 "component_type": comp["type"],
                 "value": comp["value"],
-                "footprint": self._get_footprint(comp["type"]),
+                "footprint": self._get_footprint(comp["type"], comp["value"]),
                 "unit_price": costs[key],
                 "total_price": round(costs[key] * comp["quantity"], 2),
                 "supplier": "Generic",  # Could be expanded to query supplier APIs
@@ -354,21 +382,28 @@ class BOMGenerator:
 
         return entries
 
-    def _get_footprint(self, comp_type: str) -> str:
+    def _get_footprint(self, comp_type: str, value: str = "") -> str:
         """
         Get footprint for component type
 
         Args:
             comp_type: Component type
+            value: Component value/model (registry parts carry real packages)
 
         Returns:
             Footprint description
         """
+        real = _REAL_MPN.get(str(value or ""))
+        if real:
+            return real[1]
+        if comp_type == "Transistor" and _POWER_FET_RE.match(str(value or "")):
+            return "THT, TO-220"
         footprints = {
             "Resistor": "THT, Axial, 0.25W",
             "Capacitor": "THT, Radial, Disc",
             "Inductor": "THT, Axial",
             "Diode": "THT, DO-35",
+            "TVS Diode": "THT, DO-35 / SMA",
             "LED": "THT, 3mm, Radial",
             "Transistor": "THT, TO-92",
             "IC": "THT, DIP-8",
@@ -378,6 +413,7 @@ class BOMGenerator:
             "Motor": "External load / terminal block",
             "Module": "Module / header",
             "Sensor": "Module / header",
+            "Fuse": "THT, 5x20mm glass",
             "Voltage Source": "N/A",
             "Current Source": "N/A"
         }
