@@ -19,6 +19,7 @@ import {
 } from '@mui/material';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import SendIcon from '@mui/icons-material/Send';
+import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import { API_BASE_URL } from '../config.mjs';
 import { handleApiCall, validateCircuitDescription, formatUserError } from '../lib/errorUtils';
 
@@ -117,11 +118,21 @@ export default function DesignWorkbench() {
         <Grid item xs={12} lg={5}>
           <Paper elevation={1} sx={{ p: { xs: 2, md: 3 }, height: '100%' }}>
             <Stack spacing={2}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AutoAwesomeIcon color="primary" />
-                <Typography variant="h4" component="h1" fontWeight="bold">
-                  CircuitGPT
-                </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <AutoAwesomeIcon color="primary" />
+                  <Typography variant="h4" component="h1" fontWeight="bold">
+                    CircuitGPT
+                  </Typography>
+                </Box>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<FolderOpenIcon />}
+                  onClick={() => router.push('/projects')}
+                >
+                  我的项目
+                </Button>
               </Box>
 
               <form onSubmit={handleSubmit}>

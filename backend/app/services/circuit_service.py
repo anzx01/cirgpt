@@ -7,6 +7,7 @@ import json
 import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models import CircuitDesign, DesignHistory
@@ -45,6 +46,7 @@ class CircuitService:
         logger.info(f"Creating new circuit design: {design_data.description[:50]}...")
 
         design = CircuitDesign(
+            name=design_data.name or self._derive_name(design_data.description),
             description=design_data.description,
             status="pending",
             progress=0,
@@ -70,18 +72,92 @@ class CircuitService:
         """
         return self.db.query(CircuitDesign).filter(CircuitDesign.id == design_id).first()
 
-    async def list_designs(self, skip: int = 0, limit: int = 100) -> List[CircuitDesign]:
+    async def list_design_summaries(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        status: Optional[str] = None,
+        q: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        List all circuit designs
+        List lightweight project summaries ordered by most recently updated.
+
+        Selects only list-page columns so heavy payloads (schematic images,
+        artifacts, netlists) are never loaded for the overview.
 
         Args:
             skip: Number of records to skip
             limit: Maximum number of records to return
+            status: Optional status filter (pending/processing/completed/failed)
+            q: Optional substring filter on name or description
 
         Returns:
-            List of circuit designs
+            {"total": int, "items": List[dict]}
         """
-        return self.db.query(CircuitDesign).offset(skip).limit(limit).all()
+        query = self.db.query(
+            CircuitDesign.id,
+            CircuitDesign.name,
+            CircuitDesign.description,
+            CircuitDesign.status,
+            CircuitDesign.progress,
+            CircuitDesign.current_step,
+            CircuitDesign.estimated_cost,
+            CircuitDesign.created_at,
+            CircuitDesign.updated_at,
+            CircuitDesign.completed_at,
+            CircuitDesign.error_message,
+            func.json_extract(CircuitDesign.validation, "$.status").label("validation_status"),
+            func.json_extract(CircuitDesign.validation, "$.circuit_type").label("validation_circuit_type"),
+        )
+
+        if status:
+            query = query.filter(CircuitDesign.status == status)
+        if q:
+            pattern = f"%{q}%"
+            query = query.filter(
+                (CircuitDesign.name.like(pattern)) | (CircuitDesign.description.like(pattern))
+            )
+
+        total = query.count()
+        rows = (
+            query.order_by(CircuitDesign.updated_at.desc(), CircuitDesign.id.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+        items = [
+            {
+                "id": row.id,
+                "name": row.name,
+                "description": self._snippet(row.description, 200),
+                "status": row.status,
+                "progress": row.progress,
+                "current_step": row.current_step,
+                "estimated_cost": row.estimated_cost,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "completed_at": row.completed_at,
+                "error_message": row.error_message,
+                "validation_status": row.validation_status,
+                "validation_circuit_type": row.validation_circuit_type,
+            }
+            for row in rows
+        ]
+        return {"total": total, "items": items}
+
+    @staticmethod
+    def _derive_name(description: str) -> str:
+        """First line of the description, trimmed to 60 chars."""
+        first_line = (description or "").strip().splitlines()[0] if description else ""
+        return first_line[:60]
+
+    @staticmethod
+    def _snippet(text: Optional[str], max_len: int) -> Optional[str]:
+        if text is None:
+            return None
+        text = " ".join(text.split())
+        return text if len(text) <= max_len else text[:max_len] + "…"
 
     async def update_design(self, design_id: int,
                            update_data: CircuitDesignUpdate) -> Optional[CircuitDesign]:
@@ -200,6 +276,7 @@ class CircuitService:
                 simulation_result,
                 pcb_result,
                 schematic_result,
+                skipped_components=schematic_result.get("skipped_components") or [],
             )
             artifacts = self._build_artifacts(
                 netlist=netlist,
@@ -497,6 +574,7 @@ class CircuitService:
         simulation_result: Dict[str, Any],
         pcb_result: Dict[str, Any],
         schematic_result: Dict[str, Any],
+        skipped_components: List[str] = None,
     ) -> Dict[str, Any]:
         """Build an explicit validation/degraded-capability report."""
         simulation = simulation_result.get("results", {})
@@ -532,8 +610,26 @@ class CircuitService:
         if simulation.get("status") == "failed":
             status = "failed"
 
+        # 结果是否兑现了原始需求：generic_circuit 意味着规则兜底生成的占位
+        # 拓扑，它不代表用户描述里要求的电路。这是与 PCB 实验性预览等
+        # "能力降级" 完全不同的诚实性问题，必须单独标记并在 UI 置顶提示。
+        generic_draft = circuit_ir.get("circuit_type") == "generic_circuit"
+        if generic_draft:
+            warnings.append(
+                "未按原始需求实现：该结果为通用规则兜底生成的占位草稿，"
+                "不代表描述中要求的电路，不可直接使用。"
+            )
+        # 器件/引脚没能在原理图里画出来 = 需求未兑现，必须可见
+        skipped_components = skipped_components or []
+        if skipped_components:
+            warnings.append(
+                "以下元件/引脚未能映射到 KiCad 符号，原理图中缺失："
+                + "、".join(str(s) for s in skipped_components)
+            )
+
         return {
             "status": status,
+            "requirements_fulfilled": not generic_draft and not skipped_components,
             "circuit_type": circuit_ir.get("circuit_type"),
             "checks": {
                 "circuit_ir_supported": circuit_ir.get("supported", False),

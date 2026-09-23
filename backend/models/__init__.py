@@ -65,6 +65,7 @@ def init_db() -> None:
 
     forward_columns = {
         "circuit_designs": [
+            ("name", "VARCHAR(200)"),
             ("schematic_pages", "TEXT"),
             ("schematic_png", "TEXT"),
             ("simulation_status", "VARCHAR(50)"),

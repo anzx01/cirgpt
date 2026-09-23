@@ -9,6 +9,7 @@ class CircuitDesign(Base):
     __tablename__ = "circuit_designs"
 
     id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=True)  # Display name; falls back to description
     description = Column(Text, nullable=False)  # Natural language description
     status = Column(String(50), default="pending")  # pending, processing, completed, failed
     progress = Column(Integer, default=0)
@@ -53,6 +54,7 @@ class CircuitDesign(Base):
         """Convert model to dictionary"""
         return {
             "id": self.id,
+            "name": self.name,
             "description": self.description,
             "status": self.status,
             "progress": self.progress,

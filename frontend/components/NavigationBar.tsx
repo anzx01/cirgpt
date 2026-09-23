@@ -16,15 +16,13 @@ import ListItemIcon from '@mui/material/ListItemIcon'
 import ListItemText from '@mui/material/ListItemText'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import EditIcon from '@mui/icons-material/Edit'
-import FileCopyIcon from '@mui/icons-material/FileCopy'
-import SettingsIcon from '@mui/icons-material/Settings'
+import FolderOpenIcon from '@mui/icons-material/FolderOpen'
 import { useRouter } from 'next/navigation'
 
 const menuItems = [
   { text: 'Workbench', icon: <DashboardIcon />, path: '/' },
   { text: 'New Design', icon: <EditIcon />, path: '/design' },
-  { text: 'Templates', icon: <FileCopyIcon />, path: '/templates' },
-  { text: 'Settings', icon: <SettingsIcon />, path: '/settings' },
+  { text: '项目管理', icon: <FolderOpenIcon />, path: '/projects' },
 ]
 
 const NavigationBar = () => {
@@ -76,6 +74,9 @@ const NavigationBar = () => {
             </Button>
             <Button color="inherit" onClick={() => router.push('/design')}>
               New Design
+            </Button>
+            <Button color="inherit" onClick={() => router.push('/projects')}>
+              项目管理
             </Button>
           </Box>
         </Toolbar>

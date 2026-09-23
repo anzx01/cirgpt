@@ -6,10 +6,12 @@ from datetime import datetime
 class CircuitDesignCreate(BaseModel):
     """Schema for creating a circuit design"""
     description: str = Field(..., description="Natural language description of the circuit")
+    name: Optional[str] = Field(None, max_length=200, description="Display name; auto-derived from description when omitted")
 
 
 class CircuitDesignUpdate(BaseModel):
     """Schema for updating a circuit design"""
+    name: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
     progress: Optional[int] = None
@@ -36,6 +38,7 @@ class CircuitDesignUpdate(BaseModel):
 class CircuitDesignResponse(BaseModel):
     """Schema for circuit design response"""
     id: int
+    name: Optional[str] = None
     description: str
     status: str
     progress: Optional[int] = 0
@@ -63,6 +66,23 @@ class CircuitDesignResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CircuitDesignSummary(BaseModel):
+    """Lightweight schema for project lists (excludes heavy result payloads)"""
+    id: int
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: str
+    progress: Optional[int] = 0
+    current_step: Optional[str] = None
+    estimated_cost: Optional[float] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    validation_status: Optional[str] = None
+    validation_circuit_type: Optional[str] = None
 
 
 class CircuitDesignList(BaseModel):

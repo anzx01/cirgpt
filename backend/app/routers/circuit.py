@@ -3,11 +3,17 @@ Circuit design router
 """
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Response
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import logging
 import uuid
 
-from schemas import CircuitDesignCreate, CircuitDesignUpdate, CircuitDesignResponse, DesignStatus
+from schemas import (
+    CircuitDesignCreate,
+    CircuitDesignUpdate,
+    CircuitDesignResponse,
+    CircuitDesignSummary,
+    DesignStatus,
+)
 from app.services.circuit_service import CircuitService
 from app.utils.database import get_db
 from models import SessionLocal
@@ -51,16 +57,30 @@ async def create_circuit(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=List[CircuitDesignResponse], summary="List circuit designs")
+@router.get("/", response_model=List[CircuitDesignSummary], summary="List circuit designs")
 async def list_circuits(
     skip: int = 0,
     limit: int = 100,
-    service: CircuitService = Depends(get_circuit_service)
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+    service: CircuitService = Depends(get_circuit_service),
+    response: Response = None,
 ):
-    """Get list of all circuit designs"""
+    """List circuit designs as lightweight summaries (most recently updated first).
+
+    Query params: `skip`/`limit` for paging, `status` (pending/processing/
+    completed/failed) to filter by state, `q` to search name/description.
+    The total number of matching designs is returned in the `X-Total-Count`
+    response header.
+    """
+    if status and status not in ("pending", "processing", "completed", "failed"):
+        raise HTTPException(status_code=400, detail="Invalid status filter")
     try:
-        designs = await service.list_designs(skip, limit)
-        return designs
+        result = await service.list_design_summaries(skip=skip, limit=limit, status=status, q=q)
+        response.headers["X-Total-Count"] = str(result["total"])
+        return result["items"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing circuits: {e}")
         raise HTTPException(status_code=500, detail=str(e))

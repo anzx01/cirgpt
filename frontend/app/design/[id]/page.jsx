@@ -30,6 +30,7 @@ import {
   ViewInAr as PcbIcon,
   Checklist as BomIcon,
   Home as HomeIcon,
+  FolderOpen as ProjectsIcon,
   FactCheck as ValidationIcon,
   Download as DownloadIcon,
   Visibility as VisibilityIcon,
@@ -338,7 +339,16 @@ export default function DesignResultPage() {
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, flexWrap: 'wrap', gap: 2 }}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="h4" fontWeight="bold" gutterBottom>
-              电路设计 #{designId}
+              {design?.name
+                ? (
+                  <>
+                    {design.name}
+                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                      #{designId}
+                    </Typography>
+                  </>
+                )
+                : `电路设计 #${designId}`}
             </Typography>
             <Typography variant="body1" color="text.secondary" paragraph sx={{ wordBreak: 'break-word' }}>
               {design?.description}
@@ -386,6 +396,13 @@ export default function DesignResultPage() {
               disabled={rawLoading}
             >
               {rawLoading ? 'Loading…' : 'Show raw DeepSeek response'}
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<ProjectsIcon />}
+              onClick={() => router.push('/projects')}
+            >
+              项目列表
             </Button>
             <Button
               variant="outlined"

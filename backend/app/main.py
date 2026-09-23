@@ -3,6 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import ai, eda, health, circuit
 from app.config import settings
 from app.websocket.socket_manager import socket_manager
+from models import init_db
+
+# Create tables and apply forward-only column additions (idempotent).
+init_db()
 
 api_app = FastAPI(title="Circuit Design API Gateway", version="1.0.0")
 
