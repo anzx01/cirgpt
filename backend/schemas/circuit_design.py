@@ -91,3 +91,8 @@ class CircuitDesignList(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class BatchDeleteRequest(BaseModel):
+    """IDs of designs to delete in one call (project list multi-select)"""
+    ids: List[int] = Field(..., description="Design IDs to delete; empty list is rejected")

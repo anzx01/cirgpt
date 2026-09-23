@@ -6,6 +6,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   Container,
   Dialog,
@@ -82,6 +83,11 @@ export default function ProjectsPage() {
   const [deleting, setDeleting] = useState(null); // 待删除确认的项目
   const [deletingBusy, setDeletingBusy] = useState(false);
 
+  // 多选删除：选中 id 集合 + 批量确认框
+  const [selected, setSelected] = useState(new Set());
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+
   const [snackbar, setSnackbar] = useState(null);
 
   const fetchProjects = async (silent = false) => {
@@ -125,6 +131,37 @@ export default function ProjectsPage() {
   const paged = useMemo(
     () => filtered.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage),
     [filtered, page, rowsPerPage]
+  );
+
+  // 当前页被删空时回退到最后一页
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(filtered.length / rowsPerPage) - 1);
+    if (page > maxPage) setPage(maxPage);
+  }, [filtered.length, rowsPerPage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pagedIds = useMemo(() => paged.map((p) => p.id), [paged]);
+  const allPagedSelected = pagedIds.length > 0 && pagedIds.every((id) => selected.has(id));
+  const somePagedSelected = pagedIds.some((id) => selected.has(id));
+
+  const toggleSelected = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const toggleSelectAllPaged = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (pagedIds.every((id) => next.has(id))) pagedIds.forEach((id) => next.delete(id));
+      else pagedIds.forEach((id) => next.add(id));
+      return next;
+    });
+
+  const selectedProjects = useMemo(
+    () => projects.filter((p) => selected.has(p.id)),
+    [projects, selected]
   );
 
   const handleRenameOpen = (project) => {
@@ -179,6 +216,40 @@ export default function ProjectsPage() {
     setProjects((prev) => prev.filter((p) => p.id !== deleting.id));
     setDeleting(null);
     setSnackbar({ severity: 'success', message: '项目已删除' });
+  };
+
+  const handleBatchDeleteConfirm = async () => {
+    setBatchDeleting(true);
+    const result = await handleApiCall(
+      () => fetch(`${API_BASE_URL}/circuit/batch-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selected) })
+      }),
+      '批量删除项目'
+    );
+    setBatchDeleting(false);
+    setBatchConfirmOpen(false);
+    if (!result.success) {
+      setSnackbar({ severity: 'error', message: result.error });
+      return;
+    }
+    const { deleted = [], failed = [] } = result.data || {};
+    if (deleted.length) {
+      const gone = new Set(deleted);
+      setProjects((prev) => prev.filter((p) => !gone.has(p.id)));
+    }
+    if (failed.length) {
+      // 失败的保持选中，方便用户重试；成功的清掉
+      setSelected(new Set(failed.map((f) => f.id)));
+      setSnackbar({
+        severity: 'warning',
+        message: `已删除 ${deleted.length} 个，${failed.length} 个失败：#${failed.map((f) => f.id).join('、#')}`
+      });
+    } else {
+      setSelected(new Set());
+      setSnackbar({ severity: 'success', message: `已删除 ${deleted.length} 个项目` });
+    }
   };
 
   const statusCount = (status) =>
@@ -260,6 +331,30 @@ export default function ProjectsPage() {
           </TextField>
         </Stack>
 
+        {selected.size > 0 && (
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            sx={{ mb: 2, p: 1, px: 1.5, bgcolor: 'action.hover', borderRadius: 1, flexWrap: 'wrap' }}
+          >
+            <Chip size="small" color="primary" label={`已选 ${selected.size} 个项目`} />
+            <Button
+              size="small"
+              color="error"
+              variant="contained"
+              startIcon={<DeleteIcon />}
+              onClick={() => setBatchConfirmOpen(true)}
+              disabled={batchDeleting}
+            >
+              删除所选
+            </Button>
+            <Button size="small" onClick={() => setSelected(new Set())} disabled={batchDeleting}>
+              清除选择
+            </Button>
+          </Stack>
+        )}
+
         {error && (
           <Alert severity="error" sx={{ mb: 2 }}>
             {error}
@@ -274,6 +369,16 @@ export default function ProjectsPage() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
+                    <TableCell padding="checkbox">
+                      <Tooltip title={allPagedSelected ? '取消选择本页' : '选择本页全部'}>
+                        <Checkbox
+                          size="small"
+                          indeterminate={somePagedSelected && !allPagedSelected}
+                          checked={allPagedSelected}
+                          onChange={toggleSelectAllPaged}
+                        />
+                      </Tooltip>
+                    </TableCell>
                     <TableCell>项目名称</TableCell>
                     <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>描述</TableCell>
                     <TableCell>状态</TableCell>
@@ -284,7 +389,7 @@ export default function ProjectsPage() {
                 <TableBody>
                   {paged.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={6}>
                         <Typography color="text.secondary" align="center" sx={{ py: 4 }}>
                           {projects.length === 0
                             ? '还没有项目，点击右上角「新建项目」开始第一个设计'
@@ -299,7 +404,14 @@ export default function ProjectsPage() {
                     const isGenericDraft =
                       p.status === 'completed' && p.validation_circuit_type === 'generic_circuit';
                     return (
-                      <TableRow key={p.id} hover>
+                      <TableRow key={p.id} hover selected={selected.has(p.id)}>
+                        <TableCell padding="checkbox">
+                          <Checkbox
+                            size="small"
+                            checked={selected.has(p.id)}
+                            onChange={() => toggleSelected(p.id)}
+                          />
+                        </TableCell>
                         <TableCell>
                           <Box
                             sx={{ cursor: 'pointer', maxWidth: 280 }}
@@ -442,6 +554,35 @@ export default function ProjectsPage() {
           </Button>
           <Button onClick={handleDeleteConfirm} color="error" variant="contained" disabled={deletingBusy}>
             {deletingBusy ? '删除中…' : '删除'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* 批量删除确认对话框 */}
+      <Dialog open={batchConfirmOpen} onClose={() => setBatchConfirmOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>批量删除项目</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            确定要删除选中的 {selected.size} 个项目吗？
+            <br />
+            {selectedProjects.slice(0, 5).map((p) => (
+              <span key={p.id} style={{ display: 'block' }}>
+                ・{p.name || firstLine(p.description)}（#{p.id}）
+              </span>
+            ))}
+            {selectedProjects.length > 5 && (
+              <span style={{ display: 'block' }}>…等共 {selectedProjects.length} 个</span>
+            )}
+            <br />
+            原理图、仿真结果、PCB、BOM 等所有数据将一并删除，且无法恢复。
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBatchConfirmOpen(false)} disabled={batchDeleting}>
+            取消
+          </Button>
+          <Button onClick={handleBatchDeleteConfirm} color="error" variant="contained" disabled={batchDeleting}>
+            {batchDeleting ? '删除中…' : `删除 ${selected.size} 个`}
           </Button>
         </DialogActions>
       </Dialog>

@@ -12,6 +12,7 @@ from schemas import (
     CircuitDesignUpdate,
     CircuitDesignResponse,
     CircuitDesignSummary,
+    BatchDeleteRequest,
     DesignStatus,
 )
 from app.services.circuit_service import CircuitService
@@ -115,6 +116,41 @@ async def update_circuit(
     except Exception as e:
         logger.error(f"Error updating circuit {design_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/batch-delete", summary="Batch delete circuit designs")
+async def batch_delete_circuits(
+    request: BatchDeleteRequest,
+    service: CircuitService = Depends(get_circuit_service),
+):
+    """Delete several designs in one call (project list multi-select).
+
+    Each ID is deleted independently: a missing or failing ID never blocks
+    the others; per-ID outcomes are reported so the UI can show exactly
+    what happened.
+    """
+    ids = list(dict.fromkeys(request.ids))  # dedupe, keep order
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids must not be empty")
+
+    deleted: List[int] = []
+    failed: List[dict] = []
+    for design_id in ids:
+        try:
+            if await service.delete_design(design_id):
+                deleted.append(design_id)
+            else:
+                failed.append({"id": design_id, "error": "not found"})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Error deleting circuit {design_id}: {exc}")
+            failed.append({"id": design_id, "error": str(exc)[:200]})
+
+    return {
+        "deleted": deleted,
+        "deleted_count": len(deleted),
+        "failed": failed,
+        "failed_count": len(failed),
+    }
 
 
 @router.delete("/{design_id}", summary="Delete circuit design")
