@@ -6,7 +6,12 @@ from pydantic import BaseModel
 from typing import Dict, Any
 import logging
 
-from nlp.circuit_ir import parse_description_to_ir
+from nlp.circuit_ir import (
+    parse_description_to_ir,
+    classify_request,
+    refusal_ir,
+    normalize_real_parts,
+)
 from nlp.circuit_generator import generate_circuit_design
 from nlp.deepseek_parser import deepseek_configured, parse_description_with_deepseek
 
@@ -57,9 +62,27 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
         if deepseek_configured():
             try:
                 requirements, raw_response = await parse_description_with_deepseek(request.description, return_raw=True)
-                if not requirements.get("supported", False) and request.description.strip():
-                    requirements = parse_description_to_ir(request.description)
-                    parser_warnings.append("DeepSeek returned an unsupported result; generic rule-based draft was used.")
+                cls = classify_request(request.description.lower())
+                if cls["refusals"]:
+                    # DeepSeek will happily draft anything, but v1 generators
+                    # cannot realize parts outside the registry — refuse
+                    # rather than emit a placeholder presented as the request.
+                    requirements = refusal_ir(request.description, cls["refusals"])
+                    parser_warnings.append(
+                        "DeepSeek drafted this request, but v1 cannot realize the named parts; no placeholder was generated."
+                    )
+                elif not requirements.get("supported", False) and request.description.strip():
+                    # DeepSeek explicitly judged this request unsupported. Keep
+                    # that verdict — overriding it with a rule-based generic
+                    # draft would fabricate a result the request never asked for.
+                    parser_warnings.append(
+                        "DeepSeek judged this request unsupported; no fallback draft was generated."
+                    )
+                else:
+                    # 登记器件规范化 + 限制披露（如板框尺寸无法保证）
+                    requirements = normalize_real_parts(requirements, request.description.lower())
+                    for note in cls["disclosures"]:
+                        requirements.setdefault("warnings", []).append("限制披露：" + note)
             except Exception as exc:
                 logger.warning(f"DeepSeek parsing failed, falling back to rule parser: {exc}")
                 requirements = parse_description_to_ir(request.description)
@@ -82,7 +105,7 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
             success=requirements.get("supported", False),
             message="Successfully parsed natural language description"
             if requirements.get("supported", False)
-            else "Description is empty or not a circuit request"
+            else (requirements.get("warnings") or ["Unsupported circuit request"])[0]
         )
 
     except Exception as e:

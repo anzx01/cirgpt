@@ -22,6 +22,144 @@ SUPPORTED_TYPES = [
     "generic_circuit",
 ]
 
+# ---------------------------------------------------------------------------
+# 需求分类：登记器件（可精确实现）/ 无法实现（拒绝）/ 限制（可生成但须披露）
+#
+# 「登记器件」= eda_tools 里有对应 KiCad 库符号+引脚真值表的真实器件
+# （见 eda_tools/mcp_schematic.py 的 _REAL_PARTS）。规则解析器不会构建
+# 这些器件——只有 DeepSeek 解析路径才允许。
+# ---------------------------------------------------------------------------
+_MCU_ANY = re.compile(r"esp32|esp8266|stm32|arduino|atmega|attiny|rp2040|raspberry|树莓派|单片机|开发板", re.I)
+_ESP32_C3 = re.compile(r"esp32-?c3", re.I)
+_USB_ANY = re.compile(r"usb|type-?c", re.I)
+_USB_C = re.compile(r"(?:usb|type)[-_]?c(?![a-z0-9])|usb-?c|usb_c", re.I)
+_REG_ANY = re.compile(r"稳压|ldo|ams1117|lm7805|\b7805\b|mp1584|tps\d{4}|lt\d{3,}|电源芯片", re.I)
+_REG_OK = re.compile(r"ams1117|7805|lm7805|3\.3\s*v?稳压|稳压[^。；;\n]{0,8}3\.3|3\.3[^。；;\n]{0,4}稳压|ldo", re.I)
+
+_REALIZABLE_PART_PATTERNS: List[tuple] = [
+    ("ESP32-C3 系列 MCU", _ESP32_C3),
+    ("USB-C (Type-C) 接口", _USB_C),
+    ("AMS1117/7805/3.3V 稳压", _REG_OK),
+    ("UART/串口/下载接口（排针）", re.compile(
+        r"\buart\b|\busart\b|串口|下载(?:接口|电路|口)|烧录|ch340|cp2102", re.I)),
+]
+
+_REFUSAL_CATEGORIES: List[tuple] = [
+    ("MCU/开发板/单片机模块（当前仅支持 ESP32-C3 系列）", _MCU_ANY),
+    ("USB 接口（当前仅支持 USB-C）", _USB_ANY),
+    ("稳压电路/电源芯片（当前仅支持 AMS1117、7805 及 3.3V LDO）", _REG_ANY),
+    ("晶振/时钟元件", re.compile(r"晶振|crystal|谐振器", re.I)),
+    ("独立无线/射频模块", re.compile(r"无线模块|蓝牙模块|wifi模块|bluetooth.?module|nrf\d|lora|zigbee", re.I)),
+    ("充电管理电路", re.compile(r"tp4056|充电(?:管理|电路)|charger|charge.?management", re.I)),
+]
+
+_DISCLOSURE_PATTERNS: List[tuple] = [
+    ("板框/尺寸约束在 v1 PCB 预览中无法保证，生成结果不承诺该尺寸",
+     re.compile(r"板框|板子尺寸|\d+\s*mm\s*[×x*]\s*\d+\s*mm", re.I)),
+]
+
+
+def classify_request(text_lower: str) -> Dict[str, List[str]]:
+    """把描述分类为 {realizable, refusals, disclosures} 三个标签列表。
+
+    某类别若命中其登记子模式（如 ESP32-C3），则该类别的拒绝不再生效。
+    """
+    realizable = [name for name, pat in _REALIZABLE_PART_PATTERNS if pat.search(text_lower)]
+    refusals: List[str] = []
+    if _MCU_ANY.search(text_lower) and not _ESP32_C3.search(text_lower):
+        refusals.append("MCU/开发板/单片机模块（当前仅支持 ESP32-C3 系列）")
+    if _USB_ANY.search(text_lower) and not _USB_C.search(text_lower):
+        refusals.append("USB 接口（当前仅支持 USB-C）")
+    if _REG_ANY.search(text_lower) and not _REG_OK.search(text_lower):
+        refusals.append("稳压电路/电源芯片（当前仅支持 AMS1117、7805 及 3.3V LDO）")
+    for name, pat in _REFUSAL_CATEGORIES[3:]:
+        if pat.search(text_lower):
+            refusals.append(name)
+    disclosures = [name for name, pat in _DISCLOSURE_PATTERNS if pat.search(text_lower)]
+    return {"realizable": realizable, "refusals": refusals, "disclosures": disclosures}
+
+
+def refusal_ir(description: str, refusals: List[str], extra: str = "") -> Dict[str, Any]:
+    """拒绝生成：描述点名了 v1 无法实现的内容。"""
+    msg = (
+        "描述中点名了当前版本无法实现的内容：" + "、".join(refusals)
+        + "。为避免生成与你需求不符的占位电路，已拒绝生成。" + extra
+    )
+    return unsupported_ir(description, msg)
+
+
+def real_part_refusal_ir(description: str, realizable: List[str]) -> Dict[str, Any]:
+    """规则解析器路径的拒绝：真实器件只有 DeepSeek 路径才能构建。"""
+    msg = (
+        "该需求包含真实器件（" + "、".join(realizable)
+        + "），需要 DeepSeek 大模型解析；当前 DeepSeek 解析不可用，"
+        "规则解析器不会为真实器件生成占位电路。"
+    )
+    return unsupported_ir(description, msg)
+
+
+# 真实器件规范化：LLM 措辞五花八门，统一改写为 eda_tools 登记表能识别的
+# canonical type + 型号（符号与引脚真值由 eda 侧提供，不信任 LLM 引脚号）。
+_REAL_PART_CANONICAL: Dict[str, tuple] = {
+    "mcu_module_esp32c3": (
+        "ESP32-C3", re.compile(r"esp32[ \-_]?c3", re.I),
+    ),
+    "usb_c_power_connector": (
+        "USB_C_Receptacle_USB2.0",
+        re.compile(r"usb[ \-_]?c|type[ \-_]?c|usb_c", re.I),
+    ),
+    "ldo_ams1117": (
+        "AMS1117-3.3", re.compile(r"ams1117|ldo|linear.?regulator|稳压", re.I),
+    ),
+}
+
+
+def normalize_real_parts(ir: Dict[str, Any], description_lower: str) -> Dict[str, Any]:
+    """把 DeepSeek IR 中命中登记表的元件改写为 canonical 类型/型号。
+
+    只动 type/model 两个键；引脚连接保持 LLM 给的语义名，由 eda 侧
+    翻译成真实引脚号。
+    """
+    placed_labels: List[str] = []
+    for comp in ir.get("components") or []:
+        if not isinstance(comp, dict):
+            continue
+        t = str(comp.get("type") or "").lower()
+        text = " ".join(
+            str(comp.get(k) or "")
+            for k in ("ref", "type", "value", "model", "manufacturer_part", "name", "description")
+        ).lower()
+
+        def canon(key: str) -> None:
+            label = _REAL_PART_CANONICAL[key][0]
+            comp["type"] = key
+            comp["model"] = label
+            placed_labels.append(label)
+
+        if _REAL_PART_CANONICAL["mcu_module_esp32c3"][1].search(text) or (
+            _ESP32_C3.search(description_lower)
+            and any(k in t for k in ("module", "mcu", "microcontroller", "controller", "soc", "esp32"))
+        ):
+            canon("mcu_module_esp32c3")
+        elif _REAL_PART_CANONICAL["usb_c_power_connector"][1].search(text) and (
+            "connector" in t or "usb" in t or "conn" in t or "receptacle" in t
+        ):
+            canon("usb_c_power_connector")
+        elif (
+            _REAL_PART_CANONICAL["ldo_ams1117"][1].search(text)
+            and ("ldo" in t or "regulator" in t or "稳压" in text)
+        ) or (
+            _REG_OK.search(description_lower)
+            and any(k in t for k in ("ldo", "regulator"))
+        ):
+            canon("ldo_ams1117")
+
+    if placed_labels:
+        ir.setdefault("warnings", []).append(
+            "真实器件（KiCad 标准库符号与引脚）：" + "、".join(dict.fromkeys(placed_labels)) + "。"
+        )
+    return ir
+
 
 def _first_float(pattern: str, text: str, default: float) -> float:
     match = re.search(pattern, text, re.IGNORECASE)
@@ -354,6 +492,7 @@ def _generic_control_circuit_ir(description: str) -> Dict[str, Any]:
     ir["warnings"].extend([
         "Generic circuit draft: verify topology, values, device ratings, and safety requirements before use.",
         "Simulation is not available for arbitrary mixed-signal drafts.",
+        "通用占位草稿：该拓扑不代表描述中要求的具体电路，仅供结构参考，不可用于生产。",
     ])
     ir["nets"] = _nets_from_components(ir["components"])
     return ir
@@ -402,6 +541,14 @@ def parse_description_to_ir(description: str) -> Dict[str, Any]:
     if not text:
         return unsupported_ir(description, "Description is empty.")
 
+    # Honesty gate (rules path): 规则解析器无法构建任何登记器件，也不
+    # 能实现点名后无法兑现的类别——拒绝而不是生成占位草稿。
+    cls = classify_request(lower)
+    if cls["refusals"]:
+        return refusal_ir(description, cls["refusals"])
+    if cls["realizable"]:
+        return real_part_refusal_ir(description, cls["realizable"])
+
     if "555" in lower or "timer" in lower or "blinker" in lower or "blink" in lower:
         return _timer_555_ir(text)
     if has_capacitor and (has_discharge_behavior or _mentions_led(lower)):
@@ -418,7 +565,7 @@ def parse_description_to_ir(description: str) -> Dict[str, Any]:
 
 
 def unsupported_ir(description: str, message: str) -> Dict[str, Any]:
-    return {
+    ir = {
         "schema_version": "1.0",
         "supported": False,
         "circuit_type": "unsupported",
@@ -430,3 +577,8 @@ def unsupported_ir(description: str, message: str) -> Dict[str, Any]:
         "source": {"mode": "rules", "rationale": []},
         "warnings": [message],
     }
+    # 把点名了但无法实现的内容带出去，供上层/UI 如实展示
+    detected = classify_request((description or "").lower())["refusals"]
+    if detected:
+        ir["constraints"]["unimplementable_requests"] = detected
+    return ir

@@ -153,7 +153,204 @@ def _subsystem_of(comp: Dict[str, Any]) -> str:
     return "other"
 
 
+# ---------------------------------------------------------------------------
+# 真实器件登记表
+#
+# 这些器件的符号、封装与引脚真值全部来自本机 KiCad 10 标准库（登记时
+# 逐一核对过 .kicad_sym 引脚定义）。CircuitIR 里用语义引脚名（如 3V3、
+# VBUS、VI），布线时由 _expand_real_part_connections 翻译成真实引脚号，
+# 引脚号绝不由 LLM 编造。
+# ---------------------------------------------------------------------------
+_REAL_PARTS: Dict[str, Dict[str, Any]] = {
+    "mcu_module_esp32c3": {
+        "lib": "MCU_Espressif",
+        "symbol": "ESP32-C3",
+        "footprint": "Package_DFN_QFN:QFN-32-1EP_4x4mm_P0.4mm_EP2.65x2.65mm",
+        "value_label": "ESP32-C3",
+        "pins": {
+            "3V3": ["2", "3", "11", "17", "31", "32"],  # 全部 VDD 引脚
+            "GND": ["33"],
+            "EN": ["7"],
+            "TX": ["28"],   # U0TXD
+            "RX": ["27"],   # U0RXD
+            "IO2": ["6"],
+            "IO4": ["9"],   # MTMS
+            "IO5": ["10"],  # MTDI
+            "IO6": ["12"],  # MTCK
+            "IO7": ["13"],  # MTDO
+            "IO8": ["14"],
+            "IO9": ["15"],
+            "IO10": ["16"],
+            "IO18": ["25"],
+            "IO19": ["26"],
+        },
+        "pin_aliases": {
+            "3V3": ["3V3", "VCC", "VDD", "+3V3", "3.3V"],
+            "GND": ["GND", "0", "VSS", "DGND"],
+            "EN": ["EN", "CHIP_EN", "CHIP_EN/RESET"],
+            "TX": ["TX", "UART_TX", "TXD", "TXD0", "U0TXD", "GPIO21"],
+            "RX": ["RX", "UART_RX", "RXD", "RXD0", "U0RXD", "GPIO20"],
+            "IO2": ["IO2", "GPIO2"],
+            "IO4": ["IO4", "GPIO4", "MTMS"],
+            "IO5": ["IO5", "GPIO5", "MTDI"],
+            "IO6": ["IO6", "GPIO6", "MTCK"],
+            "IO7": ["IO7", "GPIO7", "MTDO"],
+            "IO8": ["IO8", "GPIO8"],
+            "IO9": ["IO9", "GPIO9"],
+            "IO10": ["IO10", "GPIO10"],
+            "IO18": ["IO18", "GPIO18"],
+            "IO19": ["IO19", "GPIO19"],
+        },
+    },
+    "usb_c_power_connector": {
+        "lib": "Connector",
+        "symbol": "USB_C_Receptacle_USB2.0_16P",
+        "footprint": "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12",
+        "value_label": "USB_C_Receptacle_USB2.0",
+        "pins": {
+            "VBUS": ["A4", "A9", "B4", "B9"],
+            "CC1": ["A5"],
+            "CC2": ["B5"],
+            "D+": ["A6", "B6"],
+            "D-": ["A7", "B7"],
+            "GND": ["A1", "B1", "A12", "B12"],
+            "SHIELD": ["SH"],
+        },
+        "pin_aliases": {
+            "VBUS": ["VBUS", "+5V", "5V", "VBUS_5V"],
+            "CC1": ["CC1"],
+            "CC2": ["CC2"],
+            "D+": ["D+", "DP"],
+            "D-": ["D-", "DM"],
+            "GND": ["GND", "0", "VSS"],
+            "SHIELD": ["SHIELD", "SH"],
+        },
+    },
+    "ldo_ams1117": {
+        "lib": "Regulator_Linear",
+        "symbol": "AMS1117-3.3",
+        "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+        "value_label": "AMS1117-3.3",
+        "pins": {
+            "VI": ["3"],
+            "VO": ["2"],
+            "GND": ["1"],
+        },
+        # LDO 的 IR 节点写的是所在网络名：输入网络常叫 VBUS/5V/VIN
+        "pin_aliases": {
+            "VI": ["VI", "VIN", "IN", "VBUS", "+5V", "5V"],
+            "VO": ["VO", "VOUT", "OUT", "3V3", "+3V3", "3.3V"],
+            "GND": ["GND", "0", "VSS"],
+        },
+    },
+}
+
+# 语义引脚名的常见同义词（LLM 措辞差异），翻译到登记表的标准名
+_PIN_SYNONYMS: Dict[str, str] = {
+    "VCC": "3V3", "VDD": "3V3", "3V3": "3V3", "+3V3": "3V3", "3.3V": "3V3",
+    "GND": "GND", "0": "GND", "VSS": "GND", "DGND": "GND",
+    "EN": "EN", "CHIP_EN": "EN", "CHIP_EN/RESET": "EN",
+    "TX": "TX", "UART_TX": "TX", "TXD": "TX", "TXD0": "TX", "U0TXD": "TX", "GPIO21": "TX",
+    "RX": "RX", "UART_RX": "RX", "RXD": "RX", "RXD0": "RX", "U0RXD": "RX", "GPIO20": "RX",
+    "VBUS": "VBUS", "VBUS_5V": "VBUS", "+5V": "VBUS", "5V": "VBUS",
+    "CC1": "CC1", "CC2": "CC2",
+    "DP": "D+", "D+": "D+", "DM": "D-", "D-": "D-",
+    "SHIELD": "SHIELD", "SH": "SHIELD",
+    "VI": "VI", "VIN": "VI", "IN": "VI",
+    "VO": "VO", "VOUT": "VO", "OUT": "VO",
+}
+
+
+def _real_part_key(comp: Dict[str, Any]) -> Optional[str]:
+    """Registry key for a component, matched by canonical type or part text."""
+    t = str(comp.get("type") or "").lower().strip()
+    if t in _REAL_PARTS:
+        return t
+    text = " ".join(
+        str(comp.get(k) or "") for k in ("value", "model", "manufacturer_part", "name")
+    ).lower()
+    if "esp32-c3" in text or "esp32c3" in text:
+        return "mcu_module_esp32c3"
+    if "ams1117" in text:
+        return "ldo_ams1117"
+    if "usb-c" in text or "usb_c" in text or "type-c" in text or "typec" in text:
+        return "usb_c_power_connector"
+    return None
+
+
+def _expand_real_part_connections(
+    ir: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Rewrite registry-part net connections from positional to real pins.
+
+    IR nets use ``ref.index`` (1-based node position). For registry parts the
+    node at that position is a semantic pin name; translate it to the real
+    KiCad pin number(s), expanding multi-pin groups (VBUS x4, GND x4, ...) into
+    one connection per physical pin. Unknown semantic names are dropped and
+    reported so the caller can disclose them instead of silently losing them.
+    """
+    components = {str(c.get("ref")): c for c in ir.get("components", []) if isinstance(c, dict)}
+    dropped: List[str] = []
+
+    def part_pin_info(ref: str):
+        """(pins, alias->semantic) for a registry part, else None."""
+        comp = components.get(ref)
+        if comp is None:
+            return None
+        key = _real_part_key(comp)
+        if key is None:
+            return None
+        part = _REAL_PARTS[key]
+        alias_map: Dict[str, str] = {}
+        for semantic, names in (part.get("pin_aliases") or {}).items():
+            for n in names:
+                alias_map[n.upper()] = semantic
+        return part["pins"], alias_map
+
+    new_nets: List[Any] = []
+    for net in ir.get("nets", []):
+        if not isinstance(net, dict):
+            new_nets.append(net)
+            continue
+        conns: List[str] = []
+        extra: List[str] = []
+        for conn in net.get("connections", []) or []:
+            ref, _, pin = str(conn).rpartition(".")
+            info = part_pin_info(ref)
+            if info is None or not pin.isdigit():
+                conns.append(str(conn))
+                continue
+            pins_map, alias_map = info
+            nodes = [str(n) for n in components[ref].get("nodes") or []]
+            idx = int(pin) - 1
+            if idx < 0 or idx >= len(nodes):
+                dropped.append(f"{conn}(节点越界)")
+                continue
+            node = nodes[idx].strip()
+            if node in pins_map:
+                semantic = node
+            else:
+                semantic = alias_map.get(node.upper()) or _PIN_SYNONYMS.get(node.upper(), node)
+            group = pins_map.get(semantic)
+            if not group:
+                dropped.append(f"{ref}.{node}(未知引脚)")
+                continue
+            conns.append(f"{ref}.{group[0]}")
+            extra.extend(f"{ref}.{p}" for p in group[1:])
+        new_net = dict(net)
+        new_net["connections"] = conns + extra
+        new_nets.append(new_net)
+
+    expanded = dict(ir)
+    expanded["nets"] = new_nets
+    return expanded, dropped
+
+
 def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    key = _real_part_key(comp)
+    if key is not None:
+        part = _REAL_PARTS[key]
+        return (part["lib"], part["symbol"])
     t = str(comp.get("type") or "").lower()
     v = str(comp.get("value") or "")
     vu = v.upper()
@@ -239,6 +436,9 @@ def _symbol_for(comp: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 
 def _footprint_for(lib: str, sym: str, comp: Dict[str, Any]) -> str:
+    key = _real_part_key(comp)
+    if key is not None:
+        return _REAL_PARTS[key]["footprint"]
     t = str(comp.get("type") or "").lower()
     if (lib, sym) == ("Device", "R"):
         return RES_FP
@@ -267,6 +467,9 @@ def _footprint_for(lib: str, sym: str, comp: Dict[str, Any]) -> str:
 
 
 def _fmt_value(comp: Dict[str, Any]) -> str:
+    key = _real_part_key(comp)
+    if key is not None:
+        return str(_REAL_PARTS[key]["value_label"])
     t = str(comp.get("type") or "").lower()
     value = comp.get("value")
     unit = str(comp.get("unit") or "").strip()
@@ -1242,7 +1445,17 @@ def _plan_wire_routes(
     """Plan wire routes for signal nets; conflicts fall back to labels."""
     all_pin_points: Set[Tuple[float, float]] = set(pin_positions.values())
 
+    # Per-symbol horizontal extent: a horizontal stub may never cross the
+    # symbol that owns the pin (its other pins would be shorted). Pins on the
+    # right half of a symbol may only reach slots right of the whole symbol;
+    # left-half pins only slots left of it.
+    ref_extent: Dict[str, Tuple[float, float]] = {}
+    for (r, _p), (px, _py) in pin_positions.items():
+        lo, hi = ref_extent.get(r, (px, px))
+        ref_extent[r] = (min(lo, px), max(hi, px))
+
     net_points: Dict[str, List[Tuple[float, float]]] = {}
+    point_owner: Dict[Tuple[float, float], str] = {}
     for net in ir_nets:
         if not isinstance(net, dict):
             continue
@@ -1257,9 +1470,44 @@ def _plan_wire_routes(
                 pos = pin_positions.get((ref, pin))
                 if pos is not None:
                     points.append(pos)
+                    point_owner.setdefault(pos, ref)
         unique = sorted(set(points))
         if len(unique) >= 2:
             net_points[name] = unique
+
+    def corridor_clear(p1: Tuple[float, float], p2: Tuple[float, float], own: Set[Tuple[float, float]]) -> bool:
+        """Straight horizontal run p1->p2 passes no foreign pin."""
+        seg = (p1[0], p1[1], p2[0], p2[1])
+        for px, py in all_pin_points:
+            if (px, py) in own:
+                continue
+            if _point_on_segment(px, py, seg):
+                return False
+        return True
+
+    plans: Dict[str, Dict[str, Any]] = {}
+    routed_pins: Set[Tuple[float, float]] = set()
+
+    # Pass 1 — series wires: a two-pin net whose facing pins sit on the same
+    # row with a clear corridor gets one straight wire (classic R->LED look).
+    for name in sorted(net_points):
+        pts = net_points[name]
+        if len(pts) != 2:
+            continue
+        (ax, ay), (bx, by) = pts
+        if abs(ay - by) > _EPS:
+            continue
+        a_ref, b_ref = point_owner[(ax, ay)], point_owner[(bx, by)]
+        if a_ref == b_ref:
+            continue
+        if not corridor_clear((ax, ay), (bx, by), set(pts)):
+            continue
+        plans[name] = {
+            "segments": [(ax, ay, bx, by)],
+            "junctions": [],
+            "points": set(pts),
+        }
+        routed_pins.update(pts)
 
     # Gutter trunk slots between (and beside) the component columns. Trunk
     # x positions must sit on KiCad's 1.27 mm connection grid: ERC flags
@@ -1270,21 +1518,37 @@ def _plan_wire_routes(
 
     slots: List[float] = []
     centers = sorted(columns_x) or [100.0]
-    slots.append(_snap_grid(centers[0] - 25.0))
+    for off in (25.0, 35.0, 45.0, 55.0):
+        slots.append(_snap_grid(centers[0] - off))
     for a, b in zip(centers, centers[1:]):
         middle = _snap_grid((a + b) / 2.0)
         for off in (0.0, 2.54, -2.54, 5.08, -5.08, 7.62, -7.62):
             slots.append(round(middle + off, 2))
-    slots.append(_snap_grid(centers[-1] + 25.0))
+    for off in (25.0, 35.0, 45.0, 55.0):
+        slots.append(_snap_grid(centers[-1] + off))
     slots = sorted(set(slots))
 
-    plans: Dict[str, Dict[str, Any]] = {}
+    def side_ok(slot: float, px: float, ref: str) -> bool:
+        lo, hi = ref_extent.get(ref, (px - 1.0, px + 1.0))
+        if hi - lo < 2.0:
+            # 竖直窄条符号（R/C/LED 上下引脚同 x）：水平走线不会穿过
+            # 自身其他引脚，两侧槽位都可用。
+            return True
+        mid = (lo + hi) / 2.0
+        if px >= mid:   # right-edge pin: corridor must clear the whole symbol
+            return slot > hi + _EPS
+        return slot < lo - _EPS
+
     used_slots: Set[float] = set()
     for name in sorted(net_points, key=lambda n: -len(net_points[n])):
+        if name in plans:
+            continue
         points = net_points[name]
         best_slot, best_cost = None, None
         for slot in slots:
             if slot in used_slots:
+                continue
+            if not all(side_ok(slot, px, point_owner[(px, py)]) for px, py in points):
                 continue
             cost = sum(abs(px - slot) for px, _py in points)
             if best_cost is None or cost < best_cost:
@@ -1513,11 +1777,12 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
     # supplies are placed too (as Simulation_SPICE source symbols): a
     # schematic whose 9V battery exists only as VCC labels reads as
     # "missing the power source"
+    ir, real_part_drops = _expand_real_part_connections(ir)
     components = [
         comp for comp in ir.get("components", []) if isinstance(comp, dict)
     ]
     placed: List[Tuple[Dict[str, Any], str, str]] = []  # (comp, lib, sym)
-    skipped: List[str] = []
+    skipped: List[str] = list(real_part_drops)
     for comp in components:
         lib_sym = _symbol_for(comp)
         if lib_sym is None:

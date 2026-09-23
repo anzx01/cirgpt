@@ -236,8 +236,8 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
             raise ValueError(f"CircuitIR missing required role(s): {', '.join(sorted(missing))}")
     elif circuit_type not in SUPPORTED_TYPES and circuit_type != "generic_circuit":
         warnings.append(
-            f"circuit_type '{circuit_type}' is free-form; downstream EDA generators "
-            "will fall back to the generic_circuit pipeline."
+            f"circuit_type '{circuit_type}' is free-form; 通用元件由 KiCad 库"
+            " 标准符号生成，登记器件（ESP32-C3/USB-C/AMS1117）使用真实符号。"
         )
 
     if not _SNAKE_CASE_RE.match(circuit_type):

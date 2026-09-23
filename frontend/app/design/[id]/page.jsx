@@ -421,9 +421,24 @@ export default function DesignResultPage() {
         )}
 
         {!isProcessing && progress.status === 'completed' && (
-          <Alert severity="success" sx={{ mt: 2 }}>
-            设计生成成功完成！
-          </Alert>
+          design?.validation?.requirements_fulfilled === false || design?.validation?.circuit_type === 'generic_circuit' ? (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              <Typography fontWeight="bold">该结果是通用占位草稿，并非按你的原始需求实现！</Typography>
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                系统未能将你的描述解析为受支持的电路类型，以下结果是规则兜底生成的占位拓扑，
+                不包含你要求的具体电路内容，请勿直接使用：
+              </Typography>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+                {(design?.validation?.warnings || []).map((w, i) => (
+                  <li key={i} style={{ fontSize: '0.875rem' }}>{w}</li>
+                ))}
+              </ul>
+            </Alert>
+          ) : (
+            <Alert severity="success" sx={{ mt: 2 }}>
+              设计生成成功完成！
+            </Alert>
+          )
         )}
       </Paper>
 

@@ -16,6 +16,13 @@ _IC_MODEL_RE = re.compile(
     re.I,
 )
 
+# 登记器件的真实采购信息（与 mcp_schematic._REAL_PARTS 对应）
+_REAL_MPN = {
+    "ESP32-C3": ("Espressif ESP32-C3 (QFN-32)", "SMD, QFN-32 4x4mm", 1.20),
+    "USB_C_Receptacle_USB2.0": ("HRO TYPE-C-31-M-12 16P", "SMD, USB-C 16P", 0.35),
+    "AMS1117-3.3": ("AMS1117-3.3 (SOT-223)", "SMD, SOT-223", 0.15),
+}
+
 
 class BOMGenerator:
     """Generate Bill of Materials from netlist"""
@@ -41,13 +48,17 @@ class BOMGenerator:
             "Current Source": 0.00
         }
 
-    def generate_bom(self, netlist: str, design_name: str = "Circuit") -> Dict[str, Any]:
+    def generate_bom(self, netlist: str, design_name: str = "Circuit",
+                     circuit_ir: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        Generate BOM from netlist
+        Generate BOM from netlist (or preferentially from CircuitIR)
 
         Args:
             netlist: SPICE netlist
             design_name: Name of the design
+            circuit_ir: Optional CircuitIR; when present its components are
+                the BOM source of truth (real refs/models), since netlist
+                engineering models replace digital parts with sources.
 
         Returns:
             BOM data
@@ -55,8 +66,11 @@ class BOMGenerator:
         logger.info("Generating BOM")
 
         try:
-            # Parse components from netlist
-            components = self._parse_components(netlist)
+            # Parse components from netlist or IR
+            if circuit_ir and circuit_ir.get("components"):
+                components = self._components_from_ir(circuit_ir)
+            else:
+                components = self._parse_components(netlist)
 
             # Group by component type
             grouped_components = self._group_components(components)
@@ -88,6 +102,28 @@ class BOMGenerator:
         except Exception as e:
             logger.error(f"Error generating BOM: {e}")
             raise
+
+    def _components_from_ir(self, ir: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """BOM component list straight from CircuitIR (real refs/models)."""
+        components: List[Dict[str, Any]] = []
+        for comp in ir.get("components") or []:
+            if not isinstance(comp, dict):
+                continue
+            t = str(comp.get("type") or "").lower()
+            if t in {"voltage_source", "signal_source", "supply", "power_source"}:
+                continue  # 仿真源，不是采购件
+            ref = str(comp.get("ref") or "").strip()
+            if not ref:
+                continue
+            value = str(comp.get("model") or comp.get("value") or t or ref)
+            comp_type = self._get_component_type(ref, value)
+            components.append({
+                "reference": ref,
+                "type": comp_type,
+                "value": value,
+                "quantity": 1,
+            })
+        return components
 
     def _parse_components(self, netlist: str) -> List[Dict[str, Any]]:
         """
@@ -267,8 +303,9 @@ class BOMGenerator:
         for key, comp in grouped_components.items():
             comp_type = comp["type"]
 
-            # Get base price
-            base_price = self.component_prices.get(comp_type, 0.10)
+            # Get base price (登记器件使用真实估价)
+            real_price = _REAL_MPN.get(str(comp.get("value") or ""))
+            base_price = real_price[2] if real_price else self.component_prices.get(comp_type, 0.10)
 
             # Adjust price based on quantity (bulk discount)
             quantity = comp["quantity"]
@@ -357,6 +394,9 @@ class BOMGenerator:
         Returns:
             Part number
         """
+        # 登记器件给出真实采购信息
+        if value in _REAL_MPN:
+            return _REAL_MPN[value][0]
         # Simplified part numbers
         return f"{comp_type.upper()}-{value.replace(' ', '-')}"
 
@@ -424,9 +464,10 @@ class BOMGenerator:
         return self.export_to_csv(bom_data)
 
 
-def generate_bom(netlist: str, design_name: str = "Circuit") -> Dict[str, Any]:
+def generate_bom(netlist: str, design_name: str = "Circuit",
+                 circuit_ir: Dict[str, Any] = None) -> Dict[str, Any]:
     """
-    Generate BOM from netlist
+    Generate BOM from netlist (or CircuitIR when provided)
 
     Args:
         netlist: SPICE netlist
@@ -436,7 +477,7 @@ def generate_bom(netlist: str, design_name: str = "Circuit") -> Dict[str, Any]:
         BOM data
     """
     generator = BOMGenerator()
-    bom_data = generator.generate_bom(netlist, design_name)
+    bom_data = generator.generate_bom(netlist, design_name, circuit_ir=circuit_ir)
 
     # Add CSV export
     bom_data["csv"] = generator.export_to_csv(bom_data)

@@ -131,6 +131,34 @@ Component completeness
   the assumption in "source.rationale" or "design_notes". Do not silently
   leave them blank.
 
+Real parts registry (v1 EDA can place these EXACTLY from the KiCad library)
+When the request uses one of the real parts below, you MUST use the canonical
+"type", set "model" to the given part number, and use ONLY the listed node
+(semantic pin) names for that component. Pin numbers are resolved by the EDA
+side from the KiCad library — never invent pin numbers or other pin names.
+Companion components marked MUST be included.
+
+1. ESP32-C3 MCU (any ESP32-C3 module/chip request):
+   type="mcu_module_esp32c3", model="ESP32-C3"
+   allowed nodes: "3V3","GND","EN","TX","RX","IO2","IO4","IO5","IO6","IO7",
+                  "IO8","IO9","IO10","IO18","IO19"
+   (TX=U0TXD, RX=U0RXD for the UART download interface)
+   MUST include: one 100 nF decoupling cap per 3V3 pin group (at least one),
+   and an EN pull-up 10 k to 3V3 if EN is used.
+2. USB-C power input connector:
+   type="usb_c_power_connector", model="USB_C_Receptacle_USB2.0"
+   allowed nodes: "VBUS","CC1","CC2","D+","D-","GND","SHIELD"
+   MUST include: R 5.1k CC1->GND and R 5.1k CC2->GND (sink pulldowns).
+   VBUS is a 5 V rail — feed it into the regulator input.
+3. AMS1117-3.3 LDO (3.3 V regulation):
+   type="ldo_ams1117", model="AMS1117-3.3"
+   allowed nodes: "VI","VO","GND"
+   MUST include: 10 uF cap on VI->GND and 22 uF cap on VO->GND.
+4. UART/download header: use a plain connector component (type "connector")
+   with 4 nodes, e.g. ["3V3","TX","RX","GND"].
+Parts outside this registry (other MCUs, USB connectors, regulators...) cannot
+be drawn by v1; such requests are refused upstream — do not work around it.
+
 Warnings
 - Use "warnings" for: human review required, generic/conceptual draft,
   no SPICE macromodel available, missing safety certification, ratings

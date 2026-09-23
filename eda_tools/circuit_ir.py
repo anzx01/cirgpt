@@ -336,6 +336,36 @@ def _generic_component_line(
     if not nodes:
         return ""
 
+    # 登记器件的工程模型：数字器件无法 SPICE 仿真，用披露了近似方式的
+    # 等效源/负载代替，保证电源树与负载支路可以得到真实直流工作点。
+    if ctype == "usb_c_power_connector":
+        vbus = _safe_node(
+            next((str(n) for n in component.get("nodes", []) if str(n).strip().upper() in ("VBUS", "+5V", "5V")), "VBUS")
+        )
+        ref = _safe_ref(str(component.get("ref") or "J_USB"), "V", counters, used_refs)
+        return (
+            f"* {component.get('ref', 'J?')} USB-C receptacle: connector has no SPICE model;\n"
+            f"* VBUS represented by an ideal 5 V source (USB default profile).\n"
+            f"{ref} {vbus} 0 DC 5"
+        )
+    if ctype == "ldo_ams1117":
+        vi = _safe_node(next((str(n) for n in component.get("nodes", []) if str(n).strip().upper() in ("VI", "VIN", "IN")), "VBUS"))
+        vo = _safe_node(next((str(n) for n in component.get("nodes", []) if str(n).strip().upper() in ("VO", "VOUT", "OUT")), "3V3"))
+        ref = _safe_ref(str(component.get("ref") or "U_LDO"), "V", counters, used_refs)
+        return (
+            f"* {component.get('ref', 'U?')} AMS1117-3.3 LDO approximated as an ideal 3.3 V source\n"
+            f"* (dropout/load regulation not modelled).\n"
+            f"{ref} {vo} 0 DC 3.3"
+        )
+    if ctype == "mcu_module_esp32c3":
+        rail = _safe_node(next((str(n) for n in component.get("nodes", []) if str(n).strip().upper() in ("3V3", "VCC", "VDD")), "3V3"))
+        ref = _safe_ref(str(component.get("ref") or "U_MCU"), "I", counters, used_refs)
+        return (
+            f"* {component.get('ref', 'U?')} ESP32-C3 digital core has no SPICE model;\n"
+            f"* represented by a 50 mA load current source on {rail}.\n"
+            f"{ref} 0 {rail} DC 0.05"
+        )
+
     prefix = _generic_prefix(ctype)
     ref = _safe_ref(str(component.get("ref") or ""), prefix, counters, used_refs)
     value = _generic_component_value(component)
@@ -382,7 +412,11 @@ def _generic_prefix(component_type: str) -> str:
         return "K"
     if "connector" in component_type or "terminal" in component_type:
         return "J"
-    if any(token in component_type for token in ("ic", "controller", "comparator", "opamp", "timer", "microcontroller", "sensor")):
+    if any(token in component_type for token in ("ic", "controller", "comparator", "opamp", "timer", "microcontroller", "sensor", "mcu", "module")):
+        return "U"
+    if "usb_c" in component_type:
+        return "J"
+    if "ldo" in component_type or "regulator" in component_type:
         return "U"
     return "X"
 

@@ -176,11 +176,18 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                 ]
                 if draft_paged:
                     warnings.append("Draft subsystem pages attached below the full schematic for layered review.")
+                skipped = kicad_result.get("skipped_components") or []
+                if skipped:
+                    warnings.append(
+                        "以下元件/引脚未能映射到 KiCad 符号，原理图中未出现："
+                        + "、".join(str(s) for s in skipped)
+                    )
                 return {
                     "success": True,
                     "message": "KiCad/SKiDL schematic generated",
                     "svg": kicad_result["svg"],
                     "schematic_svg": kicad_result["svg"],
+                    "skipped_components": skipped,
                     "schematic_pages": pages,
                     "summary": summary,
                     "generator": kicad_result.get("generator"),
@@ -409,7 +416,7 @@ async def generate_bom_endpoint(request: BOMRequest) -> Dict[str, Any]:
             bom_netlist = generate_spice_netlist(request.circuit_ir)
         if not bom_netlist:
             raise ValueError("Either netlist or circuit_ir is required")
-        bom = generate_bom(bom_netlist, request.design_name)
+        bom = generate_bom(bom_netlist, request.design_name, circuit_ir=request.circuit_ir)
 
         return {
             "success": True,
