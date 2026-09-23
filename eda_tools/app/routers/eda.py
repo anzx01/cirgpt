@@ -375,11 +375,15 @@ async def generate_pcb_endpoint(request: PCBRequest) -> Dict[str, Any]:
         # macro-model variants (RA/RB/X1 vs the IR's R1/R2/U1).
         netlist = request.netlist
         if request.circuit_ir:
+            # The netlist is re-derived from the IR for simulation parity,
+            # but the BOARD comes from the IR itself: the SPICE view replaces
+            # registry parts with engineering models (V/I sources), which
+            # must never appear as board parts.
             netlist = generate_spice_netlist(request.circuit_ir)
         if not netlist:
             raise ValueError("Either netlist or circuit_ir is required")
 
-        layout = generate_pcb(netlist)
+        layout = generate_pcb(netlist, circuit_ir=request.circuit_ir)
         if request.circuit_ir:
             layout["kicad_pcb"] = generate_kicad_pcb_preview(request.circuit_ir)
             layout["manufacturing_status"] = "experimental_preview_only"

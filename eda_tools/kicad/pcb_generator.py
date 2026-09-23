@@ -35,16 +35,26 @@ _FOOTPRINT_GEOM: Dict[str, Dict[str, Any]] = {
     "DIP-14": dict(body=(19.4, 6.7), pads=14, pitch=2.54, row=7.62, pad=(1.6, 1.8), dip=True),
     "DIP-16": dict(body=(21.9, 6.7), pads=16, pitch=2.54, row=7.62, pad=(1.6, 1.8), dip=True),
     "DIP-20": dict(body=(26.9, 6.7), pads=20, pitch=2.54, row=7.62, pad=(1.6, 1.8), dip=True),
+    # Registry real parts (footprint strings come from _REAL_PARTS)
+    "QFN-32": dict(body=(4.0, 4.0), pads=32, pitch=0.5, pad=(0.45, 0.28), quad=True),
+    "SOT-223": dict(body=(6.5, 3.5), pads=4, pitch=2.3, pad=(1.0, 1.7), sot223=True),
+    "USB_C_Receptacle_HRO": dict(
+        body=(8.94, 7.35), pads=16, pitch=1.0, row=5.5, pad=(0.8, 1.2), dualrow=True
+    ),
 }
 _DEFAULT_GEOM = dict(body=(5.0, 2.5), pads=2, pitch=5.0, pad=(1.6, 2.0))
 
 # Rails are drawn as full-width buses, not signal chains.
 _GND_RE = re.compile(r"^(0|gnd|vss|agnd|dgnd)$", re.I)
-_VCC_RE = re.compile(r"^(vcc|vdd|vbat|\+?(\d+([.]\d+)?)v|avcc|3v3|5v|9v|12v)$", re.I)
+_VCC_RE = re.compile(r"^(vcc|vdd|vbat|\+?(\d+([.]\d+)?)v|avcc|3v3|5v|9v|12v|vbus)$", re.I)
 
 
 def _geom_for(footprint: str) -> Dict[str, Any]:
     """Footprint library name -> geometry dict (longest token match)."""
+    m = re.search(r"PinHeader_1x(\d+)", footprint or "")
+    if m:
+        n = int(m.group(1))
+        return dict(body=(2.54, (n - 1) * 2.54 + 2.0), pads=n, pitch=2.54, pad=(1.8, 1.8))
     for key, geom in _FOOTPRINT_GEOM.items():
         if key in footprint:
             return geom
@@ -64,6 +74,41 @@ def _pads_local(geom: Dict[str, Any]) -> List[Tuple[float, float, float, float]]
         for i in range(per_side):
             pads.append((-row / 2, -span / 2 + i * pitch, pw, ph))
             pads.append((row / 2, span / 2 - i * pitch, pw, ph))
+    elif geom.get("quad"):
+        # QFN perimeter, KiCad numbering: left top->bottom (1..per), bottom
+        # left->right (per+1..2per), right bottom->top (2per+1..3per), top
+        # right->left (3per+1..n). Pad index k must be pin k+1 so the
+        # per-pad net list maps straight onto these positions.
+        per = n // 4
+        span = (per - 1) * pitch
+        off = span / 2
+        e = float(geom["body"][0]) / 2 + 0.2
+        for i in range(per):
+            pads.append((-e, -off + i * pitch, ph, pw))      # left 1..per
+        for i in range(per):
+            pads.append((-off + i * pitch, e, pw, ph))        # bottom per+1..
+        for i in range(per):
+            pads.append((e, off - i * pitch, ph, pw))         # right 2per+1..
+        for i in range(per):
+            pads.append((off - i * pitch, -e, pw, ph))        # top 3per+1..
+    elif geom.get("sot223"):
+        # AMS1117 SOT-223: pad 1 = GND, pad 2 = VO (the big tab), pad 3 = VI.
+        # Three leads on the bottom edge, tab on top; pad order must match the
+        # registry's pin numbering so netlist pad k lands on physical pad k.
+        bh = float(geom["body"][1])
+        pads.append((-pitch, bh / 2 - 0.6, pw, ph))           # pin 1
+        pads.append((0.0, -bh / 2 + 0.6, 3.2, ph))            # pin 2 = tab
+        pads.append((pitch, bh / 2 - 0.6, pw, ph))            # pin 3
+    elif geom.get("dualrow"):
+        # USB-C receptacle: A-row pads first (A1..), then the B row — the
+        # per-pad net list is ordered by natural pin sort, A* before B*.
+        row = float(geom["row"])
+        per_row = n // 2
+        span = (per_row - 1) * pitch
+        for i in range(per_row):
+            pads.append((-row / 2, -span / 2 + i * pitch, pw, ph))   # A row
+        for i in range(per_row):
+            pads.append((row / 2, -span / 2 + i * pitch, pw, ph))    # B row
     else:
         span = (n - 1) * pitch
         for i in range(n):
@@ -180,12 +225,21 @@ class PCBGenerator:
         """Initialize PCB generator"""
         logger.info("Initializing PCB generator")
 
-    def generate_pcb_layout(self, netlist: str) -> Dict[str, Any]:
+    def generate_pcb_layout(
+        self, netlist: str, circuit_ir: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
-        Generate PCB layout from netlist
+        Generate PCB layout from a netlist or, preferably, a CircuitIR.
+
+        The SPICE netlist is a SIMULATION view: registry parts are replaced
+        by engineering models (ideal sources / load current sources), so a
+        board built from it would show V1/I1 instead of the real USB-C,
+        LDO and MCU. When a CircuitIR is available it is the single source
+        of truth for the physical view.
 
         Args:
-            netlist: SPICE netlist
+            netlist: SPICE netlist (fallback when no CircuitIR exists)
+            circuit_ir: CircuitIR with components + nets
 
         Returns:
             PCB layout data
@@ -193,7 +247,10 @@ class PCBGenerator:
         logger.info("Generating PCB layout")
 
         try:
-            components = self._parse_components_from_netlist(netlist)
+            if circuit_ir and circuit_ir.get("components"):
+                components = _components_from_ir(circuit_ir)
+            else:
+                components = self._parse_components_from_netlist(netlist)
             layout_data = self._create_simple_layout(components)
 
             board_outline = layout_data.get("board_outline", {})
@@ -272,35 +329,7 @@ class PCBGenerator:
         return components
 
     def _get_footprint(self, comp_type: str, value: str, pins: int = 0) -> str:
-        """
-        Get KiCad footprint for component
-
-        Args:
-            comp_type: Component type
-            value: Component value
-            pins: Pin count of the parsed element (selects DIP size for ICs)
-
-        Returns:
-            Footprint name
-        """
-        if comp_type == "U":
-            if pins and pins > 8:
-                if pins <= 14:
-                    return "Package_DIP:DIP-14_W7.62mm"
-                if pins <= 16:
-                    return "Package_DIP:DIP-16_W7.62mm"
-                if pins <= 20:
-                    return "Package_DIP:DIP-20_W7.62mm"
-            return "Package_DIP:DIP-8_W7.62mm"
-        footprints = {
-            "R": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
-            "C": "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
-            "L": "Inductor_THT:L_Axial_L12.0mm_D4.5mm_P15.00mm",
-            "D": "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal",
-            "Q": "Package_TO_SOT_THT:TO-92",
-            "V": "TestPoint:TestPoint_THT_Pad_D2.0mm_Drill1.0mm"
-        }
-        return footprints.get(comp_type, "Unknown")
+        return _footprint_for(comp_type, value, pins)
 
     def _create_simple_layout(self, components: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -480,21 +509,34 @@ class PCBGenerator:
                 "type": "bus",
             })
 
-        has_vcc = any(_VCC_RE.match(n) for n in nets if len(nets[n]) >= 2)
-        has_gnd = any(_GND_RE.match(n) for n in nets if len(nets[n]) >= 2)
-        vcc_y, gnd_y = 5.0, board_h - 5.0
-        if has_vcc:
-            bus(vcc_y, "VCC")
-        if has_gnd:
-            bus(gnd_y, "GND")
+        # Each rail net gets its OWN bus: a board with both VBUS (5 V) and
+        # 3V3 must never merge them onto one VCC bus - that is a visible
+        # short. GND stays at the bottom; positive rails stack from the top.
+        rail_names = sorted(
+            {n for n in nets if len(nets[n]) >= 2 and _GND_RE.match(n)},
+            key=str,
+        ) + sorted(
+            {n for n in nets if len(nets[n]) >= 2 and not _GND_RE.match(n) and _VCC_RE.match(n)},
+            key=str,
+        )
+        gnd_y = board_h - 5.0
+        rail_bus_y: Dict[str, float] = {}
+        pos_i = 0
+        for rail in rail_names:
+            if _GND_RE.match(rail):
+                rail_bus_y[rail] = gnd_y
+            else:
+                rail_bus_y[rail] = 5.0 + pos_i * 3.0
+                pos_i += 1
+        for rail, y in rail_bus_y.items():
+            bus(y, rail)
 
         for node, members in nets.items():
             if len(members) < 2:
                 continue
-            if _GND_RE.match(node):
-                target_y = gnd_y
-            elif _VCC_RE.match(node):
-                target_y = vcc_y
+            if node in rail_bus_y:
+                target_y = rail_bus_y[node]
+                bus_net = node
             else:
                 # signal net: chain members sorted along x to keep the
                 # Manhattan path short, steering clear of other components'
@@ -527,7 +569,7 @@ class PCBGenerator:
                     "l_points": [],
                     "width": 0.4,
                     "layer": "F.Cu",
-                    "net": "VCC" if target_y == vcc_y else "GND",
+                    "net": bus_net,
                     "type": "power",
                 }
                 if not _segments_clear(
@@ -546,7 +588,7 @@ class PCBGenerator:
                                 "l_points": [{"x": ch_x, "y": p["y"]}],
                                 "width": 0.4,
                                 "layer": "F.Cu",
-                                "net": "VCC" if target_y == vcc_y else "GND",
+                                "net": bus_net,
                                 "type": "power",
                             }
                             break
@@ -800,21 +842,150 @@ class PCBGenerator:
         return '\n'.join(p)
 
 
-def generate_pcb(netlist: str) -> Dict[str, Any]:
+def generate_pcb(
+    netlist: str, circuit_ir: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Generate PCB layout from netlist
+    Generate PCB layout from a netlist or CircuitIR (preferred).
 
     Args:
-        netlist: SPICE netlist
+        netlist: SPICE netlist (simulation view; fallback only)
+        circuit_ir: CircuitIR — the physical source of truth
 
     Returns:
         PCB layout data
     """
     generator = PCBGenerator()
-    layout = generator.generate_pcb_layout(netlist)
+    layout = generator.generate_pcb_layout(netlist, circuit_ir=circuit_ir)
 
     if layout.get("status") == "success":
         # Generate visualization
         pcb_svg = generator.generate_pcb_visualization(layout)
         layout["visualization"] = pcb_svg
     return layout
+
+
+# ---------------------------------------------------------------------------
+# CircuitIR -> board components
+#
+# The IR describes the PHYSICAL circuit (real refs, real parts); the SPICE
+# netlist derived from it replaces registry parts with engineering models
+# (V/I sources). The board must be built from the IR, never from that netlist.
+# ---------------------------------------------------------------------------
+
+def _pin_sort_key(pin: str):
+    """Natural pin order: numbers numeric-first, letter pins A* before B*."""
+    s = str(pin)
+    if s.isdigit():
+        return (0, 0, int(s), "")
+    m = re.match(r"([A-Za-z]+)(\d*)", s)
+    if m:
+        return (0, 1, int(m.group(2) or 0), m.group(1))
+    return (1, 0, 0, s)
+
+
+def _footprint_for(comp_type: str, value: str, pins: int = 0) -> str:
+    """KiCad footprint for a component letter type; pin count picks DIP size
+    and header width."""
+    if comp_type == "U":
+        if pins and pins > 8:
+            if pins <= 14:
+                return "Package_DIP:DIP-14_W7.62mm"
+            if pins <= 16:
+                return "Package_DIP:DIP-16_W7.62mm"
+            if pins <= 20:
+                return "Package_DIP:DIP-20_W7.62mm"
+        return "Package_DIP:DIP-8_W7.62mm"
+    if comp_type == "J":
+        n = max(pins or 2, 2)
+        return f"Connector_PinHeader_2.54mm:PinHeader_1x{n:02d}_P2.54mm_Vertical"
+    footprints = {
+        "R": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
+        "C": "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
+        "L": "Inductor_THT:L_Axial_L12.0mm_D4.5mm_P15.00mm",
+        "D": "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal",
+        "Q": "Package_TO_SOT_THT:TO-92",
+        "V": "TestPoint:TestPoint_THT_Pad_D2.0mm_Drill1.0mm"
+    }
+    return footprints.get(comp_type, "Unknown")
+
+
+_IR_TYPE_LETTER = {
+    "resistor": "R",
+    "capacitor": "C",
+    "inductor": "L",
+    "led": "D",
+    "diode": "D",
+    "transistor": "Q",
+    "connector": "J",
+    "switch": "S",
+    "voltage_source": "V",
+    "battery": "V",
+    "signal_source": "V",
+}
+
+
+def _components_from_ir(circuit_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Board component list from a CircuitIR: one entry per real part.
+
+    Per-component ``nodes`` is the per-pad net list (pad k+1 -> nodes[k]);
+    pads with no IR net get a unique NC name so they never alias each other
+    into phantom nets.
+    """
+    # local import: mcp_schematic lives at the eda_tools root and pulls no
+    # heavy deps at module level
+    from mcp_schematic import _REAL_PARTS, _real_part_key, _expand_real_part_connections
+
+    ir, _drops = _expand_real_part_connections(circuit_ir)
+    pin_net: Dict[str, Dict[str, str]] = {}
+    for net in ir.get("nets") or []:
+        if not isinstance(net, dict):
+            continue
+        nm = str(net.get("name") or "")
+        for conn in net.get("connections") or []:
+            ref, _, pin = str(conn).rpartition(".")
+            if ref and pin:
+                pin_net.setdefault(ref, {})[pin] = nm
+
+    components: List[Dict[str, Any]] = []
+    for comp in ir.get("components") or []:
+        if not isinstance(comp, dict):
+            continue
+        ref = str(comp.get("ref") or comp.get("name") or "X?")
+        value = str(comp.get("value") or comp.get("model") or "")
+        key = _real_part_key(comp)
+        if key is not None:
+            part = _REAL_PARTS[key]
+            pins = sorted(
+                {p for group in part["pins"].values() for p in group},
+                key=_pin_sort_key,
+            )
+            nets = pin_net.get(ref, {})
+            nodes = [nets.get(p, f"NC${ref}.{p}") for p in pins]
+            components.append({
+                "name": ref,
+                "type": "U",
+                "value": part["value_label"],
+                "footprint": part["footprint"],
+                "nodes": nodes,
+                "position": {"x": 0, "y": 0},
+            })
+            continue
+
+        t = str(comp.get("type") or "").lower().strip()
+        letter = _IR_TYPE_LETTER.get(t, "U")
+        n_pins = max(len(comp.get("nodes") or []), 2)
+        nets = pin_net.get(ref, {})
+        pin_count = max(
+            [int(p) for p in nets if str(p).isdigit()] + [n_pins]
+        )
+        nodes = [nets.get(str(k), f"NC${ref}.{k}") for k in range(1, pin_count + 1)]
+        components.append({
+            "name": ref,
+            "type": letter,
+            "value": value,
+            "footprint": _footprint_for(letter, value, pin_count),
+            "nodes": nodes,
+            "position": {"x": 0, "y": 0},
+        })
+    return components
