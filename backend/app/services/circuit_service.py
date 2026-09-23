@@ -613,23 +613,31 @@ class CircuitService:
         # 结果是否兑现了原始需求：generic_circuit 意味着规则兜底生成的占位
         # 拓扑，它不代表用户描述里要求的电路。这是与 PCB 实验性预览等
         # "能力降级" 完全不同的诚实性问题，必须单独标记并在 UI 置顶提示。
+        # 个别元件/引脚掉队属于"部分未实现"，不能把整个设计混同成占位
+        # 草稿——那会让 UI 说出与事实相反的话。
         generic_draft = circuit_ir.get("circuit_type") == "generic_circuit"
+        unfulfilled_items: List[str] = []
         if generic_draft:
-            warnings.append(
-                "未按原始需求实现：该结果为通用规则兜底生成的占位草稿，"
-                "不代表描述中要求的电路，不可直接使用。"
+            unfulfilled_items.append(
+                "整体为通用规则兜底生成的占位草稿，不代表描述中要求的电路，不可直接使用"
             )
-        # 器件/引脚没能在原理图里画出来 = 需求未兑现，必须可见
+        # 器件/引脚没能在原理图里画出来 = 部分需求未兑现，必须可见
+        # （eda 路由已就同一份数据追加过"未出现"措辞的警告，这里只在
+        # 尚未披露时补充，避免用户看到两条几乎相同的警告）
         skipped_components = skipped_components or []
-        if skipped_components:
-            warnings.append(
+        if skipped_components and not any(
+            "未能映射到 KiCad 符号" in str(w) for w in warnings
+        ):
+            unfulfilled_items.append(
                 "以下元件/引脚未能映射到 KiCad 符号，原理图中缺失："
                 + "、".join(str(s) for s in skipped_components)
             )
+        warnings.extend(unfulfilled_items)
 
         return {
             "status": status,
-            "requirements_fulfilled": not generic_draft and not skipped_components,
+            "requirements_fulfilled": not generic_draft,
+            "unfulfilled_items": unfulfilled_items,
             "circuit_type": circuit_ir.get("circuit_type"),
             "checks": {
                 "circuit_ir_supported": circuit_ir.get("supported", False),

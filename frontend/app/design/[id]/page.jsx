@@ -437,26 +437,48 @@ export default function DesignResultPage() {
           </Box>
         )}
 
-        {!isProcessing && progress.status === 'completed' && (
-          design?.validation?.requirements_fulfilled === false || design?.validation?.circuit_type === 'generic_circuit' ? (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              <Typography fontWeight="bold">该结果是通用占位草稿，并非按你的原始需求实现！</Typography>
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                系统未能将你的描述解析为受支持的电路类型，以下结果是规则兜底生成的占位拓扑，
-                不包含你要求的具体电路内容，请勿直接使用：
-              </Typography>
-              <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                {(design?.validation?.warnings || []).map((w, i) => (
-                  <li key={i} style={{ fontSize: '0.875rem' }}>{w}</li>
-                ))}
-              </ul>
-            </Alert>
-          ) : (
+        {!isProcessing && progress.status === 'completed' && (() => {
+          const v = design?.validation || {};
+          const isGenericDraft = v.circuit_type === 'generic_circuit';
+          const unfulfilled = v.unfulfilled_items || [];
+          const partial = !isGenericDraft && (unfulfilled.length > 0 || v.requirements_fulfilled === false);
+          if (isGenericDraft) {
+            return (
+              <Alert severity="warning" sx={{ mt: 2 }}>
+                <Typography fontWeight="bold">该结果是通用占位草稿，并非按你的原始需求实现！</Typography>
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  系统未能将你的描述解析为受支持的电路类型，以下结果是规则兜底生成的占位拓扑，
+                  不包含你要求的具体电路内容，请勿直接使用：
+                </Typography>
+                <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+                  {(v.warnings || []).map((w, i) => (
+                    <li key={i} style={{ fontSize: '0.875rem' }}>{w}</li>
+                  ))}
+                </ul>
+              </Alert>
+            );
+          }
+          if (partial) {
+            return (
+              <Alert severity="warning" sx={{ mt: 2 }}>
+                <Typography fontWeight="bold">电路已按描述生成，但有部分内容未能实现</Typography>
+                <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+                  {(unfulfilled.length
+                    ? unfulfilled
+                    : ['部分需求未能完全实现，详见「验证」页的警告列表']
+                  ).map((w, i) => (
+                    <li key={i} style={{ fontSize: '0.875rem' }}>{w}</li>
+                  ))}
+                </ul>
+              </Alert>
+            );
+          }
+          return (
             <Alert severity="success" sx={{ mt: 2 }}>
               设计生成成功完成！
             </Alert>
-          )
-        )}
+          );
+        })()}
       </Paper>
 
       {/* Results Tabs */}

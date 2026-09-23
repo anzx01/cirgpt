@@ -317,8 +317,25 @@ def _expand_real_part_connections(
         return part["pins"], alias_map
 
     def semantic_of(node: str, alias_map: Dict[str, str]) -> Optional[str]:
-        """Canonical registry semantic name for an IR node label."""
-        return alias_map.get(node.upper()) or _PIN_SYNONYMS.get(node.upper())
+        """Canonical registry semantic name for an IR node label.
+
+        Exact alias first; then a longest-prefix match so model-invented
+        variants (VIN_FUSED -> VI, VBUS_PROT -> VBUS, 3V3_MCU -> 3V3)
+        still land on the right pin instead of being dropped.
+        """
+        u = node.upper()
+        if u in alias_map:
+            return alias_map[u]
+        syn = _PIN_SYNONYMS.get(u)
+        if syn:
+            return syn
+        for cand in sorted(alias_map, key=len, reverse=True):
+            if len(cand) > 1 and u.startswith(cand):
+                return alias_map[cand]
+        for cand in sorted(_PIN_SYNONYMS, key=len, reverse=True):
+            if len(cand) > 1 and u.startswith(cand):
+                return _PIN_SYNONYMS[cand]
+        return None
 
     new_nets: List[Any] = []
     for net in ir.get("nets", []):
@@ -363,8 +380,56 @@ def _expand_real_part_connections(
         new_net["connections"] = conns + extra
         new_nets.append(new_net)
 
+    # A pin listed on TWO nets (LLMs name the pump return both PUMP_NEG and
+    # GND) is one electrical node: merge those nets, rail name wins, and
+    # disclose the merge instead of letting both a label and a power symbol
+    # land on the same pin (KiCad: multiple_net_names).
+    by_pin: Dict[str, List[int]] = {}
+    for i, net in enumerate(new_nets):
+        if not isinstance(net, dict):
+            continue
+        for conn in net.get("connections") or []:
+            by_pin.setdefault(str(conn), []).append(i)
+    merge_into: Dict[int, int] = {}
+    merged_disclosures: List[str] = []
+    for pin, owners in by_pin.items():
+        owners = [i for i in dict.fromkeys(owners) if i not in merge_into]
+        if len(owners) < 2:
+            continue
+        names = [str(new_nets[i].get("name")) for i in owners]
+        target = next(
+            (i for i in owners if _is_gnd(new_nets[i].get("name")) or _rail_symbol(new_nets[i].get("name"))),
+            owners[0],
+        )
+        union: List[str] = []
+        for i in owners:
+            if i == target:
+                continue
+            merge_into[i] = target
+            union.extend(str(c) for c in new_nets[i].get("connections") or [])
+        keep = [c for c in new_nets[target].get("connections") or [] if c != pin]
+        keep.append(pin)
+        seen = set(keep)
+        for c in union:
+            if c not in seen:
+                seen.add(c)
+                keep.append(c)
+        new_nets[target]["connections"] = keep
+        merged_disclosures.append(
+            f"引脚 {pin} 同时位于网络 {'、'.join(names)}；为同一电气节点，已合并为 "
+            f"{new_nets[target].get('name')}"
+        )
+    if merge_into:
+        new_nets = [
+            n for i, n in enumerate(new_nets) if i not in merge_into
+        ]
+
     expanded = dict(ir)
     expanded["nets"] = new_nets
+    if merged_disclosures:
+        expanded["warnings"] = list(ir.get("warnings") or []) + [
+            "IR 网络修正：" + d for d in merged_disclosures
+        ]
     return expanded, dropped
 
 
@@ -1851,7 +1916,11 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
     # supplies are placed too (as Simulation_SPICE source symbols): a
     # schematic whose 9V battery exists only as VCC labels reads as
     # "missing the power source"
+    base_warnings = list(ir.get("warnings") or [])
     ir, real_part_drops = _expand_real_part_connections(ir)
+    # deterministic IR fixes (net merges) add their own disclosures to the
+    # expanded IR's warnings; surface them to the caller
+    ir_adjustments = [str(w) for w in (ir.get("warnings") or [])[len(base_warnings):]]
     components = [
         comp for comp in ir.get("components", []) if isinstance(comp, dict)
     ]
@@ -2019,6 +2088,9 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                 # pins the net loop below wired (directly or via stubs); the
                 # power-attach pass takes the power_in pins not in here
                 claimed_pins: Set[Tuple[str, str]] = set()
+                # non-rail nets feeding power inputs without any driver:
+                # each gets a PWR_FLAG once all wires are drawn
+                power_needy_nets: List[Tuple[str, Tuple[str, str, Tuple[float, float]]]] = []
                 flagged_rails: Set[str] = set()
                 comp_pin_points: Set[Tuple[float, float]] = {
                     pos for (r, _p), pos in pin_positions.items() if not r.startswith("#")
@@ -2094,6 +2166,19 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                             net_name,
                         )
                         continue
+
+                    # Non-rail net that carries power inputs but no power
+                    # output (a connector-fed rail with a custom name like
+                    # VBUS_F): ERC flags every such pin as undriven. The
+                    # rail branch flags named rails; remember these for the
+                    # same PWR_FLAG treatment after all wires are drawn.
+                    if _is_gnd(net_name) or _rail_symbol(net_name):
+                        pass  # named rails flag themselves below
+                    elif (
+                        any(pin_types.get((r, p), ("", ""))[1] == "power_in" for r, p, _pos in members)
+                        and not any(pin_types.get((r, p), ("", ""))[1] == "power_out" for r, p, _pos in members)
+                    ):
+                        power_needy_nets.append((net_name, members[0]))
 
                     route = wire_plans.get(net_name)
                     if route is not None:
@@ -2229,6 +2314,16 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                 {"text": label, "position": [end[0], end[1]]},
                             )
                             label_anchor_points.add(end)
+
+                # PWR_FLAG for non-rail nets that feed power inputs (e.g. a
+                # connector-fed VBUS_F): the flag's power output satisfies
+                # ERC's "input power pin not driven". Anchored at the member
+                # pin; the deferred-flag stepper below walks it to a free
+                # spot while laying a connecting wire.
+                for flag_net, (fref, fpin, fpos) in power_needy_nets:
+                    if flag_net in flagged_rails:
+                        continue
+                    pending_flags.append((flag_net, fpos[0], fpos[1], fpos))
 
                 # Power-input pins the IR never mapped (LM358 V+/V-, an
                 # MCU's AVCC): tie them to their rail so ERC sees a driven
@@ -2418,5 +2513,6 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
         },
         "working_directory": str(work_dir),
         "skipped_components": skipped,
+        "ir_adjustments": ir_adjustments,
     }
     return result

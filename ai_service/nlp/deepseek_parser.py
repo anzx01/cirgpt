@@ -245,14 +245,20 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
             f"circuit_type '{circuit_type}' was normalized to fit snake_case rules."
         )
 
-    if not any("supply" == str(c.get("role")) for c in components if isinstance(c, dict)):
-        warnings.append("No component with role='supply' was provided.")
-
-    if not ir.get("open_questions") and not ir.get("design_notes"):
-        warnings.append(
-            "No open_questions or design_notes were provided; consider asking the user "
-            "to confirm load ratings, isolation, and environmental limits."
-        )
+    # 供电 lint：仅当既没有供电角色、也没有任何电源链器件（源/电池/
+    # 稳压/USB-C 供电口）时才提示——有电源链时这只是模型没打 role 标签，
+    # 对用户是噪音
+    _power_chain_types = {
+        "voltage_source", "battery", "ldo_ams1117", "usb_c_power_connector",
+    }
+    has_power_part = any(
+        str(c.get("type") or "").lower() in _power_chain_types
+        for c in components if isinstance(c, dict)
+    )
+    if not has_power_part and not any(
+        "supply" == str(c.get("role")) for c in components if isinstance(c, dict)
+    ):
+        warnings.append("描述中未包含任何供电来源（电源、电池或供电接口），请确认供电方式。")
 
     nets = ir.get("nets") if isinstance(ir.get("nets"), list) else _nets_from_components(components)
     constraints = ir.get("constraints") if isinstance(ir.get("constraints"), dict) else {}

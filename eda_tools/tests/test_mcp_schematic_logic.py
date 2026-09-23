@@ -497,6 +497,54 @@ def test_remap_power_pins_keeps_functional_supply_pins_on_signal_nets():
     assert ("U1", "3") in dropped2
 
 
+def test_expand_real_part_connections_prefix_alias():
+    # Model-invented pin variants (VIN_FUSED) must resolve to their registry
+    # pin, not get dropped as "未知引脚" — #90 lost its LDO input this way.
+    from mcp_schematic import _expand_real_part_connections
+
+    ir = {
+        "components": [
+            {"ref": "U1", "type": "ldo_ams1117", "model": "AMS1117-3.3",
+             "nodes": ["VIN_FUSED", "VO", "GND"]},
+            {"ref": "U2", "type": "mcu_module_esp32c3", "model": "ESP32-C3",
+             "nodes": ["3V3", "GND", "IO18"]},
+        ],
+        "nets": [
+            {"name": "VBUS_F", "connections": ["U1.VIN_FUSED", "J1.1"]},
+            {"name": "3V3", "connections": ["U1.VO", "U2.3V3"]},
+        ],
+    }
+    out, drops = _expand_real_part_connections(ir)
+    conns = {n["name"]: set(n["connections"]) for n in out["nets"]}
+    assert "U1.3" in conns["VBUS_F"], conns["VBUS_F"]   # VIN_FUSED -> VI -> pin 3
+    assert drops == [], drops
+
+
+def test_expand_merges_double_membership_nets():
+    # The LLM named the pump return both PUMP_NEG and GND (same pin on two
+    # nets = one electrical node): merge with the rail name winning, instead
+    # of letting a label and a power symbol collide on one pin.
+    from mcp_schematic import _expand_real_part_connections
+
+    ir = {
+        "components": [
+            {"ref": "J4", "type": "connector", "nodes": ["VIN_FUSED", "PUMP_NEG"]},
+            {"ref": "M1", "type": "motor", "nodes": ["VIN_FUSED", "PUMP_NEG"]},
+        ],
+        "nets": [
+            {"name": "0", "connections": ["J4.2"]},
+            {"name": "PUMP_NEG", "connections": ["J4.2", "M1.2"]},
+        ],
+    }
+    out, drops = _expand_real_part_connections(ir)
+    names = [n["name"] for n in out["nets"]]
+    assert "PUMP_NEG" not in names, names
+    gnd = next(n for n in out["nets"] if n["name"] == "0")
+    assert set(gnd["connections"]) == {"J4.2", "M1.2"}, gnd
+    assert any("合并" in w for w in out.get("warnings", []))
+    assert drops == []
+
+
 def test_vbus_is_a_5v_rail_symbol():
     from mcp_schematic import _rail_symbol
 

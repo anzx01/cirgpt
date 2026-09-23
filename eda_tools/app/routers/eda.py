@@ -182,6 +182,7 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                         "以下元件/引脚未能映射到 KiCad 符号，原理图中未出现："
                         + "、".join(str(s) for s in skipped)
                     )
+                warnings.extend(str(a) for a in kicad_result.get("ir_adjustments") or [])
                 return {
                     "success": True,
                     "message": "KiCad/SKiDL schematic generated",
