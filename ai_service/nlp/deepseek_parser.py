@@ -236,13 +236,13 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
             raise ValueError(f"CircuitIR missing required role(s): {', '.join(sorted(missing))}")
     elif circuit_type not in SUPPORTED_TYPES and circuit_type != "generic_circuit":
         warnings.append(
-            f"circuit_type '{circuit_type}' is free-form; 通用元件由 KiCad 库"
-            " 标准符号生成，登记器件（ESP32-C3/USB-C/AMS1117）使用真实符号。"
+            f"自由形态电路类型 '{circuit_type}'：通用元件由 KiCad 库标准符号生成，"
+            "登记器件（ESP32-C3/USB-C/AMS1117）使用真实符号与引脚。"
         )
 
     if not _SNAKE_CASE_RE.match(circuit_type):
         warnings.append(
-            f"circuit_type '{circuit_type}' was normalized to fit snake_case rules."
+            f"电路类型名 '{circuit_type}' 已规范化为 snake_case。"
         )
 
     # 供电 lint：仅当既没有供电角色、也没有任何电源链器件（源/电池/

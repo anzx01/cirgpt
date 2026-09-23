@@ -164,6 +164,8 @@ Warnings
   no SPICE macromodel available, missing safety certification, ratings
   unconfirmed, environmental limits unconfirmed, isolation voltage
   unconfirmed, EMI/EMC not analyzed. Be conservative.
+- Write every warning string in Simplified Chinese (简体中文) — they are
+  shown to Chinese-speaking end users verbatim.
 
 JSON schema (you MUST conform; additional fields are allowed)
 

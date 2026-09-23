@@ -384,45 +384,71 @@ def _expand_real_part_connections(
     # GND) is one electrical node: merge those nets, rail name wins, and
     # disclose the merge instead of letting both a label and a power symbol
     # land on the same pin (KiCad: multiple_net_names).
+    #
+    # Union-find over net indices: chains (U1.VO on both VO and +12V, VO
+    # sharing U2.2 with 3V3) must collapse in ONE pass to a fixed point —
+    # a single sweep leaves the far end of the chain double-homed again.
+    parent = list(range(len(new_nets)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
     by_pin: Dict[str, List[int]] = {}
     for i, net in enumerate(new_nets):
         if not isinstance(net, dict):
             continue
         for conn in net.get("connections") or []:
             by_pin.setdefault(str(conn), []).append(i)
-    merge_into: Dict[int, int] = {}
+    for owners in by_pin.values():
+        for other in owners[1:]:
+            union(owners[0], other)
+
+    groups: Dict[int, List[int]] = {}
+    for i in range(len(new_nets)):
+        groups.setdefault(find(i), []).append(i)
+
     merged_disclosures: List[str] = []
-    for pin, owners in by_pin.items():
-        owners = [i for i in dict.fromkeys(owners) if i not in merge_into]
-        if len(owners) < 2:
+    kept_nets: List[Any] = []
+    for members_idx in groups.values():
+        if len(members_idx) == 1 and isinstance(new_nets[members_idx[0]], dict):
+            kept_nets.append(new_nets[members_idx[0]])
             continue
-        names = [str(new_nets[i].get("name")) for i in owners]
+        dict_members = [i for i in members_idx if isinstance(new_nets[i], dict)]
+        non_dict = [new_nets[i] for i in members_idx if not isinstance(new_nets[i], dict)]
+        kept_nets.extend(non_dict)
+        if len(dict_members) < 2:
+            kept_nets.append(new_nets[dict_members[0]])
+            continue
+        # group name: GND first, then a rail name, then the first net's name
         target = next(
-            (i for i in owners if _is_gnd(new_nets[i].get("name")) or _rail_symbol(new_nets[i].get("name"))),
-            owners[0],
+            (i for i in dict_members if _is_gnd(new_nets[i].get("name"))),
+            next(
+                (i for i in dict_members if _rail_symbol(new_nets[i].get("name"))),
+                dict_members[0],
+            ),
         )
-        union: List[str] = []
-        for i in owners:
-            if i == target:
-                continue
-            merge_into[i] = target
-            union.extend(str(c) for c in new_nets[i].get("connections") or [])
-        keep = [c for c in new_nets[target].get("connections") or [] if c != pin]
-        keep.append(pin)
-        seen = set(keep)
-        for c in union:
-            if c not in seen:
-                seen.add(c)
-                keep.append(c)
+        keep: List[str] = []
+        seen = set()
+        for i in dict_members:
+            for c in new_nets[i].get("connections") or []:
+                if c not in seen:
+                    seen.add(c)
+                    keep.append(c)
         new_nets[target]["connections"] = keep
+        kept_nets.append(new_nets[target])
         merged_disclosures.append(
-            f"引脚 {pin} 同时位于网络 {'、'.join(names)}；为同一电气节点，已合并为 "
-            f"{new_nets[target].get('name')}"
+            f"网络 {'、'.join(str(new_nets[i].get('name')) for i in dict_members)} "
+            f"存在共用引脚（同一电气节点），已合并为 {new_nets[target].get('name')}"
         )
-    if merge_into:
-        new_nets = [
-            n for i, n in enumerate(new_nets) if i not in merge_into
-        ]
+    new_nets = kept_nets
 
     expanded = dict(ir)
     expanded["nets"] = new_nets
@@ -2383,11 +2409,14 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                     fx, fy = ex, ey
 
                     def spot_blocked(px: float, py: float) -> bool:
+                        # any occupied point — including a SAME-rail power
+                        # symbol — is blocked: stacking a flag on a symbol
+                        # reads as a collision even when electrically valid
                         stub_rail = power_stub_points.get((px, py))
                         return (
                             (px, py) in comp_pin_points
                             or (px, py) in label_anchor_points
-                            or (stub_rail is not None and stub_rail != rail)
+                            or stub_rail is not None
                             or on_any_wire(px, py, rail)
                         )
 

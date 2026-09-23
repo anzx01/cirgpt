@@ -172,10 +172,10 @@ async def generate_schematic_endpoint(request: SchematicRequest) -> Dict[str, An
                     "layout": kicad_result.get("layout"),
                 }
                 warnings = [
-                    "Full schematic uses standard KiCad symbols; review ERC output before layout."
+                    "完整原理图使用 KiCad 标准库符号绘制；投产前请复核 ERC 报告。"
                 ]
                 if draft_paged:
-                    warnings.append("Draft subsystem pages attached below the full schematic for layered review.")
+                    warnings.append("完整原理图下方附有各子系统分页，便于分层审阅。")
                 skipped = kicad_result.get("skipped_components") or []
                 if skipped:
                     warnings.append(

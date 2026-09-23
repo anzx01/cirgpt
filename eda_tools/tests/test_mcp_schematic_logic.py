@@ -545,6 +545,36 @@ def test_expand_merges_double_membership_nets():
     assert drops == []
 
 
+def test_expand_merges_chained_double_membership():
+    # #90 regression: U1.VO sat on BOTH "VO" and "+12V", while "VO" also
+    # shared U2.2 with "3V3" — a three-net chain. A single-sweep merge
+    # left the chain's far end double-homed (two power symbols on one
+    # pin, a PWR_FLAG on a power output). Union-find must collapse it.
+    from mcp_schematic import _expand_real_part_connections
+
+    ir = {
+        "components": [
+            {"ref": "U1", "type": "ldo_ams1117", "model": "AMS1117-3.3",
+             "nodes": ["VI", "VO", "GND"]},
+            {"ref": "U2", "type": "mcu_module_esp32c3", "model": "ESP32-C3",
+             "nodes": ["3V3", "GND"]},
+        ],
+        "nets": [
+            {"name": "VO", "connections": ["U1.VO", "U2.3V3"]},
+            {"name": "3V3", "connections": ["U2.3V3"]},
+            {"name": "+12V", "connections": ["U1.VO", "J1.1"]},
+        ],
+    }
+    out, drops = _expand_real_part_connections(ir)
+    names = [n["name"] for n in out["nets"]]
+    assert names == ["3V3"], names
+    merged = out["nets"][0]
+    for pin in ("U1.2", "U2.2", "J1.1"):
+        assert pin in merged["connections"], (pin, merged["connections"])
+    assert len([d for d in out.get("warnings", []) if "合并" in str(d)]) >= 1
+    assert drops == []
+
+
 def test_vbus_is_a_5v_rail_symbol():
     from mcp_schematic import _rail_symbol
 

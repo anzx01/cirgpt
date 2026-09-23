@@ -54,6 +54,47 @@ function TabPanel({ children, value, index }) {
   );
 }
 
+// 验证报告展示翻译：后端字段保持英文稳定契约，界面统一中文
+const CHECK_LABELS = {
+  circuit_ir_supported: 'CircuitIR 支持',
+  spice_netlist_generated: 'SPICE 网表',
+  schematic_generator: '原理图生成器',
+  kicad_schematic_generated: 'KiCad 原理图',
+  kicad_erc_status: 'KiCad ERC',
+  simulation_status: '电路仿真',
+  pcb_status: 'PCB 状态',
+  gerber_export: 'Gerber 导出',
+};
+
+const CHECK_VALUE_LABELS = {
+  true: '是',
+  false: '否',
+  passed: '通过',
+  warning: '有警告',
+  failed: '未通过',
+  not_run: '未运行',
+  unknown: '未知',
+  success: '成功',
+  degraded: '已降级（含披露限制）',
+  experimental_preview_only: '实验性预览（非生产文件）',
+  preview: '预览',
+  disabled_in_v1: 'v1 未开放',
+  'mcp:mcp-kicad-sch-api': 'KiCad MCP 服务（标准库符号）',
+  'skidl+kicad-cli': 'SKiDL + KiCad CLI',
+};
+
+const VALIDATION_STATUS_LABELS = {
+  passed: '通过',
+  degraded: '已降级——功能可用但有披露的限制（见下方警告）',
+  failed: '失败',
+  unknown: '未知',
+};
+
+const formatCheckValue = (value) => {
+  const raw = String(value);
+  return CHECK_VALUE_LABELS[raw] ?? raw;
+};
+
 export default function DesignResultPage() {
   const params = useParams();
   const router = useRouter();
@@ -544,7 +585,7 @@ export default function DesignResultPage() {
               验证报告
             </Typography>
             <Alert severity={design?.validation?.status === 'passed' ? 'success' : 'warning'} sx={{ mb: 2 }}>
-              状态: <strong>{design?.validation?.status || 'unknown'}</strong>
+              状态: <strong>{VALIDATION_STATUS_LABELS[design?.validation?.status] || design?.validation?.status || '未知'}</strong>
             </Alert>
 
             <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -552,9 +593,9 @@ export default function DesignResultPage() {
                 <Grid item xs={12} md={6} key={key}>
                   <Paper elevation={0} sx={{ p: 2, border: '1px solid', borderColor: 'divider' }}>
                     <Typography variant="caption" color="text.secondary">
-                      {key}
+                      {CHECK_LABELS[key] || key}
                     </Typography>
-                    <Typography variant="body1">{String(value)}</Typography>
+                    <Typography variant="body1">{formatCheckValue(value)}</Typography>
                   </Paper>
                 </Grid>
               ))}

@@ -39,7 +39,17 @@ async def refresh(svc: CircuitService, design: CircuitDesign) -> dict:
     # the untouched loaded one.
     import copy
 
-    design.circuit_ir = pair_usb_data_nets(copy.deepcopy(design.circuit_ir))
+    ir = pair_usb_data_nets(copy.deepcopy(design.circuit_ir))
+    # Retired lints that live on in stored IRs (their checks are now smarter
+    # upstream); keeping them would show users noise we already fixed.
+    retired = {
+        "No component with role='supply' was provided.",
+        "No open_questions or design_notes were provided; consider asking the user "
+        "to confirm load ratings, isolation, and environmental limits.",
+    }
+    if ir.get("warnings"):
+        ir["warnings"] = [w for w in ir["warnings"] if str(w) not in retired]
+    design.circuit_ir = ir
     netlist = await svc._generate_netlist_from_ir(design.circuit_ir)
     design.netlist = netlist
 
