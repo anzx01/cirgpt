@@ -441,6 +441,70 @@ def test_remap_power_pins_opamp_and_comparator_conventions():
     assert ("U1", "4") in dropped3
 
 
+def test_expand_real_part_connections_semantic_and_positional():
+    from mcp_schematic import _expand_real_part_connections
+
+    ir = {
+        "components": [
+            {"ref": "J1", "type": "usb_c_power_connector",
+             "model": "USB_C_Receptacle_USB2.0",
+             "nodes": ["VBUS", "CC1", "CC2", "D+", "D-", "GND", "SHIELD"]},
+            {"ref": "U1", "type": "ldo_ams1117", "model": "AMS1117-3.3",
+             "nodes": ["VI", "VO", "GND"]},
+            {"ref": "J2", "type": "connector", "nodes": ["3V3", "TX", "RX", "GND"]},
+            {"ref": "R1", "type": "resistor", "nodes": ["CC1", "0"]},
+        ],
+        "nets": [
+            {"name": "VBUS", "connections": ["J1.VBUS", "U1.VI"]},   # semantic
+            {"name": "CC1", "connections": ["J1.CC1", "R1.1"]},      # mixed
+            {"name": "TX", "connections": ["J2.TX"]},                # generic semantic
+        ],
+    }
+    out, drops = _expand_real_part_connections(ir)
+    conns = {n["name"]: set(n["connections"]) for n in out["nets"]}
+    assert conns["VBUS"] == {"J1.A4", "J1.A9", "J1.B4", "J1.B9", "U1.3"}, conns["VBUS"]
+    assert conns["CC1"] == {"J1.A5", "R1.1"}, conns["CC1"]
+    assert conns["TX"] == {"J2.2"}, conns["TX"]
+    assert drops == []
+
+
+def test_remap_power_pins_keeps_functional_supply_pins_on_signal_nets():
+    # AMS1117's VI is a power_in pin NAMED for its role, not for a rail: an
+    # IR that puts it on a custom-named input rail must survive intact
+    # (re-homing it to the main rail would short regulator input to output).
+    pin_types = {
+        ("U1", "1"): ("GND", "power_in"),
+        ("U1", "2"): ("VO", "power_out"),
+        ("U1", "3"): ("VI", "power_in"),
+    }
+    pin_positions = {k: (float(i * 10), 5.0) for i, k in enumerate(pin_types)}
+    nets = [
+        {"name": "VBAT_RAW", "connections": ["U1.3", "J1.1"]},
+        {"name": "3V3", "connections": ["U1.2", "C1.1"]},
+        {"name": "0", "connections": ["U1.1", "C1.2"]},
+    ]
+    out, dropped = _remap_power_pins(nets, pin_types, pin_positions)
+    conns = {n["name"]: set(n["connections"]) for n in out}
+    assert "U1.3" in conns["VBAT_RAW"]
+    assert ("U1", "3") not in dropped
+
+    # a rail-NAMED supply pin (VCC) on a signal net is still re-homed
+    pin_types2 = dict(pin_types)
+    pin_types2[("U1", "3")] = ("VCC", "power_in")
+    out2, dropped2 = _remap_power_pins(nets, pin_types2, pin_positions)
+    conns2 = {n["name"]: set(n["connections"]) for n in out2}
+    assert "U1.3" not in conns2["VBAT_RAW"]
+    assert ("U1", "3") in dropped2
+
+
+def test_vbus_is_a_5v_rail_symbol():
+    from mcp_schematic import _rail_symbol
+
+    assert _rail_symbol("VBUS") == "+5V"
+    assert _rail_symbol("3V3") == "+3V3"
+    assert _rail_symbol("SHIELD") is None
+
+
 def main() -> int:
     failures = 0
     for name, fn in sorted(globals().items()):

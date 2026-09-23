@@ -161,6 +161,48 @@ def normalize_real_parts(ir: Dict[str, Any], description_lower: str) -> Dict[str
     return ir
 
 
+def pair_usb_data_nets(ir: Dict[str, Any]) -> Dict[str, Any]:
+    """Wire a USB-C connector's D+/D- to the ESP32-C3 native USB pins.
+
+    DeepSeek reliably lists D+/D- (and IO18/IO19) as component nodes but
+    never emits the nets joining them, so both sides dangle on the schematic.
+    The ESP32-C3's USB D+/D- ARE GPIO18/19, so the pairing is deterministic.
+    Fires only when BOTH sides are currently unwired; any explicit IR net
+    wins.
+    """
+    usb_ref = mcu_ref = None
+    for comp in ir.get("components") or []:
+        t = str(comp.get("type") or "")
+        ref = str(comp.get("ref") or "")
+        if t == "usb_c_power_connector" and usb_ref is None:
+            usb_ref = ref
+        elif t == "mcu_module_esp32c3" and mcu_ref is None:
+            mcu_ref = ref
+    if not usb_ref or not mcu_ref:
+        return ir
+
+    wired = set()
+    for net in ir.get("nets") or []:
+        for conn in (net.get("connections") or []) if isinstance(net, dict) else []:
+            ref, _, pin = str(conn).rpartition(".")
+            if ref:
+                wired.add((ref, pin))
+
+    paired = []
+    for data_pin, gpio in (("D+", "IO18"), ("D-", "IO19")):
+        if (usb_ref, data_pin) not in wired and (mcu_ref, gpio) not in wired:
+            (ir.get("nets") or []).append(
+                {"name": data_pin, "connections": [f"{usb_ref}.{data_pin}", f"{mcu_ref}.{gpio}"]}
+            )
+            paired.append(f"{data_pin}→{gpio}")
+    if paired:
+        ir.setdefault("warnings", []).append(
+            "USB 数据线已自动接到 ESP32-C3 原生 USB 引脚：" + "、".join(paired)
+            + "（描述未指明时按 GPIO18/19 直连，未加 ESD/串阻）"
+        )
+    return ir
+
+
 def _first_float(pattern: str, text: str, default: float) -> float:
     match = re.search(pattern, text, re.IGNORECASE)
     return float(match.group(1)) if match else default

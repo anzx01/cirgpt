@@ -131,3 +131,6 @@ sch_555_preview.svg
 
 # Manual KiCad-export verification artifacts (regenerated at will, not source)
 eda_tools/_*.svg
+
+# Local debugging workspace (schematic/PCB audits for a specific design)
+_debug89/

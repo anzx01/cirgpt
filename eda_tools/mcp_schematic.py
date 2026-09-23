@@ -119,7 +119,7 @@ def _rail_symbol(name: Any) -> Optional[str]:
         return "VEE"
     if n in {"VCC", "VDD", "3V3", "3.3V"}:
         return "+3V3" if "3" in n else "VCC"
-    if n in {"5V", "+5V", "VCC_5V", "VDD_5V", "VCC5V"}:
+    if n in {"5V", "+5V", "VCC_5V", "VDD_5V", "VCC5V", "VBUS"}:
         return "+5V"
     if n in {"9V", "+9V", "VCC_9V"}:
         return "+9V"
@@ -281,15 +281,24 @@ def _real_part_key(comp: Dict[str, Any]) -> Optional[str]:
 def _expand_real_part_connections(
     ir: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], List[str]]:
-    """Rewrite registry-part net connections from positional to real pins.
+    """Normalize every net connection to a pin the placed symbol actually has.
 
-    IR nets use ``ref.index`` (1-based node position). For registry parts the
-    node at that position is a semantic pin name; translate it to the real
-    KiCad pin number(s), expanding multi-pin groups (VBUS x4, GND x4, ...) into
-    one connection per physical pin. Unknown semantic names are dropped and
-    reported so the caller can disclose them instead of silently losing them.
+    DeepSeek writes either style (and mixes them in one IR):
+
+    * positional — ``ref.index`` with 1-based node position (the IR spec);
+    * semantic — ``ref.name`` like ``J1.VBUS`` / ``U2.IO2`` / ``J2.TX``.
+
+    Registry parts translate the semantic name to the real KiCad pin
+    number(s), expanding multi-pin groups (VBUS x4, GND x4, ...) into one
+    connection per physical pin. Generic parts resolve semantic names
+    positionally: the node list's order IS the symbol's pin order
+    (``J2.TX`` with nodes [3V3, TX, RX, GND] is pin 2). Unresolvable
+    names are dropped and reported so the caller can disclose them
+    instead of silently losing them.
     """
-    components = {str(c.get("ref")): c for c in ir.get("components", []) if isinstance(c, dict)}
+    components = {
+        str(c.get("ref")): c for c in ir.get("components", []) if isinstance(c, dict)
+    }
     dropped: List[str] = []
 
     def part_pin_info(ref: str):
@@ -307,6 +316,10 @@ def _expand_real_part_connections(
                 alias_map[n.upper()] = semantic
         return part["pins"], alias_map
 
+    def semantic_of(node: str, alias_map: Dict[str, str]) -> Optional[str]:
+        """Canonical registry semantic name for an IR node label."""
+        return alias_map.get(node.upper()) or _PIN_SYNONYMS.get(node.upper())
+
     new_nets: List[Any] = []
     for net in ir.get("nets", []):
         if not isinstance(net, dict):
@@ -316,27 +329,36 @@ def _expand_real_part_connections(
         extra: List[str] = []
         for conn in net.get("connections", []) or []:
             ref, _, pin = str(conn).rpartition(".")
-            info = part_pin_info(ref)
-            if info is None or not pin.isdigit():
+            comp = components.get(ref)
+            if comp is None:
                 conns.append(str(conn))
                 continue
-            pins_map, alias_map = info
-            nodes = [str(n) for n in components[ref].get("nodes") or []]
-            idx = int(pin) - 1
-            if idx < 0 or idx >= len(nodes):
-                dropped.append(f"{conn}(节点越界)")
-                continue
-            node = nodes[idx].strip()
-            if node in pins_map:
-                semantic = node
+            nodes = [str(n) for n in comp.get("nodes") or []]
+            if pin.isdigit():
+                idx = int(pin) - 1
+                if idx < 0 or idx >= len(nodes):
+                    dropped.append(f"{conn}(节点越界)")
+                    continue
+                node = nodes[idx].strip()
             else:
-                semantic = alias_map.get(node.upper()) or _PIN_SYNONYMS.get(node.upper(), node)
-            group = pins_map.get(semantic)
-            if not group:
-                dropped.append(f"{ref}.{node}(未知引脚)")
-                continue
-            conns.append(f"{ref}.{group[0]}")
-            extra.extend(f"{ref}.{p}" for p in group[1:])
+                node = pin.strip()
+            info = part_pin_info(ref)
+            if info is not None:
+                pins_map, alias_map = info
+                semantic = node if node in pins_map else semantic_of(node, alias_map)
+                group = pins_map.get(semantic) if semantic else None
+                if not group:
+                    dropped.append(f"{ref}.{node}(未知引脚)")
+                    continue
+                conns.append(f"{ref}.{group[0]}")
+                extra.extend(f"{ref}.{p}" for p in group[1:])
+            else:
+                # generic part: symbol pins are numbers; the node list is
+                # positional, so a semantic label resolves to its slot
+                if node in nodes:
+                    conns.append(f"{ref}.{nodes.index(node) + 1}")
+                else:
+                    conns.append(str(conn))
         new_net = dict(net)
         new_net["connections"] = conns + extra
         new_nets.append(new_net)
@@ -862,6 +884,51 @@ def _pin_positions_from_sch(text: str) -> Dict[Tuple[str, str], Tuple[float, flo
     return positions
 
 
+def _run_cli(cmd: List[str], timeout: float = 60) -> subprocess.CompletedProcess:
+    """kicad-cli with one patient retry.
+
+    The first invocation on a cold symbol-library cache can exceed the
+    normal timeout by a wide margin; a single transient timeout must not
+    kill an otherwise complete generation. Two timeouts report failure
+    honestly — the caller decides what to degrade.
+    """
+    last_err: Optional[subprocess.TimeoutExpired] = None
+    for attempt, to in enumerate((timeout, timeout * 4)):
+        if attempt:
+            logger.info(
+                "kicad-cli timed out after %ss (%s...); retrying patiently",
+                timeout, " ".join(str(c) for c in cmd[:4]),
+            )
+        try:
+            return subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=to,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_err = exc
+    return subprocess.CompletedProcess(
+        cmd, returncode=-1, stdout="",
+        stderr=f"kicad-cli timed out twice ({last_err})",
+    )
+
+
+def _pin_name_is_rail(name: Any) -> bool:
+    """True when a pin's own name declares a power rail (VCC/VDD/GND/V+/V-).
+
+    Functional supply names (an LDO's VI/VO, a USB receptacle's VBUS) are
+    deliberately NOT rails here: they name the pin's role, not a global net,
+    so the IR's net assignment for them must be kept.
+    """
+    u = str(name or "").upper().strip()
+    if not u:
+        return False
+    if "GND" in u or u in {"VSS", "V-", "VEE", "VGND", "V+"}:
+        return True
+    if u == "VBUS":
+        return False  # the USB 5 V bus name names a role, not a global rail
+    return u in {"VCC", "VDD"} or _rail_symbol(u) is not None
+
+
 def _remap_power_pins(
     ir_nets: List[Dict[str, Any]],
     pin_types: Dict[Tuple[str, str], Tuple[str, str]],
@@ -1021,14 +1088,21 @@ def _remap_power_pins(
                 new_conns.append(conn)  # already the right supply pin
                 continue
             if not railish:
-                # supply pin on a signal net: drop it, power-attach
-                # re-homes it to the rail its pin name asks for
-                gate_dropped.add((ref, pin))
-                occupied.discard((ref, pin))
-                logger.info(
-                    "MCP wiring: signal net %s drops supply pin %s.%s (re-homed to its rail)",
-                    name, ref, pin,
-                )
+                # Supply pin on a signal net: only re-home it when the pin's
+                # own NAME declares a rail (VCC/VDD/GND/V+/V-...). Functional
+                # names (an LDO's VI/VO, a DC-DC's SW) mean the IR put the
+                # pin on that net on purpose - e.g. the regulator input on a
+                # custom-named unregulated rail - and re-homing it to the
+                # main rail would short input to output.
+                if _pin_name_is_rail(pin_types.get((ref, pin), ("", ""))[0]):
+                    gate_dropped.add((ref, pin))
+                    occupied.discard((ref, pin))
+                    logger.info(
+                        "MCP wiring: signal net %s drops supply pin %s.%s (re-homed to its rail)",
+                        name, ref, pin,
+                    )
+                    continue
+                new_conns.append(conn)
                 continue
             target = free_power_pin(ref, want_neg)
             if target:
@@ -2009,6 +2083,17 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                 claimed_pins.add((ref, pin))
                     if not members:
                         continue
+                    if len(members) == 1 and pin_types.get(
+                        (members[0][0], members[0][1]), ("", "")
+                    )[1] not in ("power_in", "power_out"):
+                        # A one-pin net connects nothing; leave the pin to
+                        # the no-connect pass so ERC reads it as intentional
+                        # instead of an isolated label.
+                        logger.info(
+                            "MCP wiring: net %s has a single non-supply pin; marking no-connect",
+                            net_name,
+                        )
+                        continue
 
                     route = wire_plans.get(net_name)
                     if route is not None:
@@ -2261,10 +2346,9 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
 
     # Gate: the exported netlist must preserve the IR's connectivity before
     # the artifacts are accepted.
-    net_run = subprocess.run(
+    net_run = _run_cli(
         [str(kicad_cli), "sch", "export", "netlist", "--format", "kicadsexpr",
          "-o", str(net_path), str(sch_path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
     if net_run.returncode != 0 or not net_path.exists():
         raise McpSchematicError(f"kicad-cli netlist export failed: {net_run.stderr[:300]}")
@@ -2276,10 +2360,9 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
             "MCP schematic connectivity does not match the CircuitIR nets; rejected"
         )
 
-    svg_run = subprocess.run(
+    svg_run = _run_cli(
         [str(kicad_cli), "sch", "export", "svg", "--exclude-drawing-sheet",
          "--no-background-color", "-o", str(svg_dir), str(sch_path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
     svg_files = sorted(svg_dir.glob("*.svg"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not svg_files:
@@ -2290,11 +2373,21 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
     if not svg:
         raise McpSchematicError("SVG export is empty")
 
-    erc_run = subprocess.run(
+    # ERC is advisory for the artifact itself; a tool timeout must not
+    # discard the finished schematic — but it is reported as skipped, never
+    # presented as a pass.
+    erc_run = _run_cli(
         [str(kicad_cli), "sch", "erc", "--format", "json", "-o", str(erc_path), str(sch_path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
     erc_json = erc_path.read_text(encoding="utf-8", errors="replace") if erc_path.exists() else ""
+    erc_summary = _summarize_erc(erc_json)
+    if erc_run.returncode != 0 or not erc_json:
+        erc_summary = {
+            "status": "skipped_tool_failure",
+            "errors": None,
+            "warnings": None,
+            "note": f"kicad-cli ERC unavailable (rc={erc_run.returncode}); NOT a pass — rerun ERC before fabrication.",
+        }
 
     result = {
         "success": True,
@@ -2302,7 +2395,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
         "kicad_schematic": sch_path.read_text(encoding="utf-8", errors="replace"),
         "skidl_netlist": net_path.read_text(encoding="utf-8", errors="replace"),
         "erc_json": erc_json,
-        "erc_summary": _summarize_erc(erc_json),
+        "erc_summary": erc_summary,
         "paths": {
             "schematic": str(sch_path),
             "netlist": str(net_path),

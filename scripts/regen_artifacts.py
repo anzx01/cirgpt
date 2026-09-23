@@ -17,12 +17,36 @@ from app.utils.database import SessionLocal  # noqa: E402
 from app.services.circuit_service import CircuitService  # noqa: E402
 from models import CircuitDesign  # noqa: E402
 
+# Load ai_service's IR fixers straight from their module file: the nlp
+# package __init__ pulls model-serving deps the backend venv does not have,
+# and ai_service also has an `app` package that would shadow backend's.
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "cirgpt_ai_circuit_ir",
+    str(Path(__file__).resolve().parents[1] / "ai_service" / "nlp" / "circuit_ir.py"),
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+pair_usb_data_nets = _mod.pair_usb_data_nets
+
 
 async def refresh(svc: CircuitService, design: CircuitDesign) -> dict:
-    sch = await svc._generate_schematic(design.netlist, design.circuit_ir)
-    sim = await svc._simulate_circuit(design.netlist, design.circuit_ir)
-    pcb = await svc._generate_pcb(design.netlist, design.circuit_ir)
-    bom = await svc._generate_bom(design.netlist, design.circuit_ir, f"Circuit_{design.id}")
+    # Deterministic post-parse fixes (same as the live parse path) so a
+    # stored IR benefits from them without re-spending AI generation.
+    # Copy BEFORE mutating: the fixer mutates in place, and SQLAlchemy only
+    # registers a JSON-column change when the assigned object differs from
+    # the untouched loaded one.
+    import copy
+
+    design.circuit_ir = pair_usb_data_nets(copy.deepcopy(design.circuit_ir))
+    netlist = await svc._generate_netlist_from_ir(design.circuit_ir)
+    design.netlist = netlist
+
+    sch = await svc._generate_schematic(netlist, design.circuit_ir)
+    sim = await svc._simulate_circuit(netlist, design.circuit_ir)
+    pcb = await svc._generate_pcb(netlist, design.circuit_ir)
+    bom = await svc._generate_bom(netlist, design.circuit_ir, f"Circuit_{design.id}")
     validation = svc._build_validation_report(design.circuit_ir, sim, pcb, sch)
     artifacts = svc._build_artifacts(
         netlist=design.netlist,

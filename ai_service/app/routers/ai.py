@@ -11,6 +11,7 @@ from nlp.circuit_ir import (
     classify_request,
     refusal_ir,
     normalize_real_parts,
+    pair_usb_data_nets,
 )
 from nlp.circuit_generator import generate_circuit_design
 from nlp.deepseek_parser import deepseek_configured, parse_description_with_deepseek
@@ -79,8 +80,9 @@ async def parse_natural_language(request: ParseRequest) -> ParseResponse:
                         "DeepSeek judged this request unsupported; no fallback draft was generated."
                     )
                 else:
-                    # 登记器件规范化 + 限制披露（如板框尺寸无法保证）
+                    # 登记器件规范化 + USB 数据线配对 + 限制披露（如板框尺寸无法保证）
                     requirements = normalize_real_parts(requirements, request.description.lower())
+                    requirements = pair_usb_data_nets(requirements)
                     for note in cls["disclosures"]:
                         requirements.setdefault("warnings", []).append("限制披露：" + note)
             except Exception as exc:
