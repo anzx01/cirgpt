@@ -161,6 +161,70 @@ def normalize_real_parts(ir: Dict[str, Any], description_lower: str) -> Dict[str
     return ir
 
 
+
+def normalize_nets(nets: List[Any], warnings: List[str]) -> List[Any]:
+    """Merge duplicate net names and enforce one-net-per-pin.
+
+    Two real failure modes seen in the wild:
+    - The same net name defined twice with different pin styles ('D+:
+      [J3.4, U3.10]' and later 'D+: [J3.D+, U3.IO18]'). Definitions merge.
+    - The same pin listed in two nets with no connectivity evidence
+      (RV1.2 in FIELD_N and in GND) - an electrical contradiction. Both
+      power aliases: drop the duplicate silently. Power owner + signal
+      claimant: signal wins. Otherwise first definition wins. Every
+      non-silent resolution appends a disclosure warning.
+    """
+    if not isinstance(nets, list):
+        return nets
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for net in nets:
+        if not isinstance(net, dict):
+            continue
+        name = str(net.get("name") or "").strip()
+        if not name:
+            continue
+        conns = [str(c) for c in (net.get("connections") or []) if str(c).strip()]
+        if name in merged:
+            for c in conns:
+                if c not in merged[name]["connections"]:
+                    merged[name]["connections"].append(c)
+        else:
+            merged[name] = {"name": name, "connections": conns}
+            order.append(name)
+
+    _power = {"0", "gnd", "vcc", "vss", "vdd", "3v3", "5v", "vbus"}
+
+    def _is_power(n: str) -> bool:
+        return n.strip().lower() in _power
+
+    pin_owner: Dict[str, str] = {}
+    for name in order:
+        keep: List[str] = []
+        for conn in merged[name]["connections"]:
+            owner = pin_owner.get(conn)
+            if owner is None or owner == name:
+                pin_owner[conn] = name
+                if conn not in keep:
+                    keep.append(conn)
+            elif _is_power(name) and _is_power(owner):
+                continue
+            elif _is_power(owner) and not _is_power(name):
+                warnings.append(
+                    f"网络规整：{conn} 同时列在 {owner} 和 {name}，已保留在 {name}（电源网疑似误列）"
+                )
+                pin_owner[conn] = name
+                keep.append(conn)
+            else:
+                warnings.append(
+                    f"网络规整：{conn} 同时列在 {owner} 和 {name}，已保留在 {owner}（首次出现优先）"
+                )
+        merged[name]["connections"] = keep
+
+    return [merged[n] for n in order if merged[n]["connections"]]
+
+
 def pair_usb_data_nets(ir: Dict[str, Any]) -> Dict[str, Any]:
     """Wire a USB-C connector's D+/D- to the ESP32-C3 native USB pins.
 
@@ -188,8 +252,18 @@ def pair_usb_data_nets(ir: Dict[str, Any]) -> Dict[str, Any]:
             if ref:
                 wired.add((ref, pin))
 
+    existing_net_names = {
+        str(n.get("name") or "").strip().upper()
+        for n in ir.get("nets") or []
+        if isinstance(n, dict)
+    }
     paired = []
     for data_pin, gpio in (("D+", "IO18"), ("D-", "IO19")):
+        # Pin-style agnostic: DeepSeek may have wired D+/D- with numbered
+        # pins under the same net NAME; a same-named net means it is already
+        # handled and must not be paired a second time.
+        if data_pin in existing_net_names:
+            continue
         if (usb_ref, data_pin) not in wired and (mcu_ref, gpio) not in wired:
             (ir.get("nets") or []).append(
                 {"name": data_pin, "connections": [f"{usb_ref}.{data_pin}", f"{mcu_ref}.{gpio}"]}

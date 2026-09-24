@@ -3,7 +3,7 @@ AI service router for circuit design
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, List
 import logging
 
 from nlp.circuit_ir import (
@@ -16,6 +16,7 @@ from nlp.circuit_ir import (
 from nlp.circuit_generator import generate_circuit_design
 from nlp.deepseek_parser import deepseek_configured, parse_description_with_deepseek
 from nlp.explainer import build_rule_explanation, explain_circuit_with_deepseek
+from nlp.reviser import revise_circuit_with_deepseek
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["AI"])
@@ -35,6 +36,15 @@ class ExplainRequest(BaseModel):
     """Request for explaining a generated circuit from its CircuitIR"""
     description: str
     circuit_ir: Dict[str, Any]
+
+
+class ReviseRequest(BaseModel):
+    """Request for revising a circuit from chat instruction"""
+    description: str
+    circuit_ir: Dict[str, Any]
+    instruction: str
+    chat_history: List[Dict[str, Any]] = []
+    images: List[Dict[str, Any]] = []  # [{name, mime_type, data_base64}]
 
 
 class ParseResponse(BaseModel):
@@ -191,6 +201,42 @@ async def explain_circuit(request: ExplainRequest) -> Dict[str, Any]:
         explanation.setdefault("warnings", []).append(warning)
 
     return {"explanation": explanation, "source": source, "success": True}
+
+
+@router.post("/revise", summary="Revise a circuit from a chat instruction")
+async def revise_circuit(request: ReviseRequest) -> Dict[str, Any]:
+    """Apply one natural-language modification instruction to a CircuitIR.
+
+    Returns the complete validated revised IR plus a Chinese revision
+    summary. There is no rule-based fallback: when DeepSeek fails the
+    error propagates so the caller keeps the old circuit untouched.
+    """
+    circuit_ir = request.circuit_ir or {}
+    if not circuit_ir.get("components"):
+        raise HTTPException(
+            status_code=400,
+            detail="circuit_ir.components is empty; nothing to revise",
+        )
+
+    try:
+        result = await revise_circuit_with_deepseek(
+            request.description,
+            circuit_ir,
+            request.instruction,
+            chat_history=request.chat_history,
+            images=request.images,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Circuit revision failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"修改电路失败：{exc}")
+
+    return {
+        "circuit_ir": result["circuit_ir"],
+        "revision_summary": result["revision_summary"],
+        "success": True,
+    }
 
 
 @router.get("/models")

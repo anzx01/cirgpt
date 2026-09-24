@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable
 import httpx
 
 from app.config import settings
-from nlp.circuit_ir import SUPPORTED_TYPES
+from nlp.circuit_ir import SUPPORTED_TYPES, normalize_nets
 from nlp.prompts.registry import active_prompt_name, get_active_system_prompt
 
 
@@ -261,6 +261,7 @@ def validate_circuit_ir(ir: Dict[str, Any], description: str, source_mode: str =
         warnings.append("描述中未包含任何供电来源（电源、电池或供电接口），请确认供电方式。")
 
     nets = ir.get("nets") if isinstance(ir.get("nets"), list) else _nets_from_components(components)
+    nets = normalize_nets(nets, warnings)
     constraints = ir.get("constraints") if isinstance(ir.get("constraints"), dict) else {}
 
     # Rebuild the source block. Always overwrite the well-known fields, but
