@@ -18,7 +18,7 @@ export default function RootLayout({ children }) {
         <ThemeRegistry>
           <NavigationBar />
           <main>{children}</main>
-          <Box sx={{ bgcolor: 'primary.main', color: 'white', py: 3, mt: 4 }}>
+          <Box id="app-footer" sx={{ bgcolor: 'primary.main', color: 'white', py: 3, mt: 4 }}>
             <Container maxWidth="lg">
               <Typography variant="body2" align="center">
                 Copyright 2026 CircuitGPT contributors. Licensed under ISC.

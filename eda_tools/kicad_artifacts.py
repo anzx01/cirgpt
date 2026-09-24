@@ -1299,12 +1299,19 @@ def _generator_script() -> str:
                     max(max(ys) - min(ys), 7.62) + 12.7,
                 )
 
-            # Column grid that wraps at the page bottom.
+            # Horizontal-first layout: every subsystem starts a new column
+            # and columns wrap only at the page bottom, so the sheet spreads
+            # left-to-right into a wide, screen-friendly strip instead of
+            # stacking all subsystems into one tall column.
             TOP, BOTTOM, COL_GAP, ROW_GAP = 44.45, 252.0, 27.94, 12.7
             positions = {}
             col_x, col_w, y = 69.85, 0.0, TOP
             max_x = col_x
-            for sub in groups:
+            for _i, sub in enumerate(groups):
+                if _i > 0:
+                    col_x += col_w + COL_GAP
+                    col_w = 0.0
+                    y = TOP
                 for ref in groups[sub]:
                     w, h = bbox(block_lib_id(ref_blocks[ref]))
                     if y + h > BOTTOM and y > TOP:
@@ -1577,125 +1584,26 @@ def _generator_script() -> str:
 
 
         def crop_svg_to_content(svg):
-            """Crop KiCad's page-sized SVG viewBox down to visible schematic content."""
+            """Crop KiCad's page-sized SVG viewBox down to visible schematic
+            content, honoring the transform stack (rotated symbols/labels)."""
             if not svg:
                 return svg
 
-            import re
+            from svg_bbox import content_bbox
 
-            number = r"[-+]?(?:\d+\.\d+|\d+|\.\d+)(?:[eE][-+]?\d+)?"
-            points = []
-
-            def add_point(x, y):
-                try:
-                    points.append((float(x), float(y)))
-                except (TypeError, ValueError):
-                    pass
-
-            def attr(tag, name):
-                match = re.search(rf'\b{name}="([^"]+)"', tag)
-                return match.group(1) if match else None
-
-            def hidden(tag):
-                return (
-                    'opacity="0"' in tag
-                    or 'stroke-opacity="0"' in tag
-                    or 'display="none"' in tag
-                    or 'visibility="hidden"' in tag
-                )
-
-            for tag in re.findall(r"<path\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-                if hidden(tag):
-                    continue
-                data = attr(tag, "d") or ""
-                values = re.findall(number, data)
-                for i in range(0, len(values) - 1, 2):
-                    add_point(values[i], values[i + 1])
-
-            for tag in re.findall(r"<(?:polyline|polygon)\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-                if hidden(tag):
-                    continue
-                values = re.findall(number, attr(tag, "points") or "")
-                for i in range(0, len(values) - 1, 2):
-                    add_point(values[i], values[i + 1])
-
-            for tag in re.findall(r"<line\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-                if hidden(tag):
-                    continue
-                add_point(attr(tag, "x1"), attr(tag, "y1"))
-                add_point(attr(tag, "x2"), attr(tag, "y2"))
-
-            for tag in re.findall(r"<rect\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-                if hidden(tag):
-                    continue
-                x = attr(tag, "x")
-                y = attr(tag, "y")
-                w = attr(tag, "width")
-                h = attr(tag, "height")
-                try:
-                    x = float(x or 0)
-                    y = float(y or 0)
-                    w = float(w or 0)
-                    h = float(h or 0)
-                except ValueError:
-                    continue
-                # Ignore full-page background rectangles if KiCad emits one.
-                if x == 0 and y == 0 and w > 200 and h > 150:
-                    continue
-                add_point(x, y)
-                add_point(x + w, y + h)
-
-            for tag in re.findall(r"<circle\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-                if hidden(tag):
-                    continue
-                cx = attr(tag, "cx")
-                cy = attr(tag, "cy")
-                r = attr(tag, "r")
-                try:
-                    cx = float(cx or 0)
-                    cy = float(cy or 0)
-                    r = float(r or 0)
-                except ValueError:
-                    continue
-                add_point(cx - r, cy - r)
-                add_point(cx + r, cy + r)
-
-            # KiCad uses hidden text plus visible stroked paths. Only include visible text.
-            for tag in re.findall(r"<text\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-                if hidden(tag):
-                    continue
-                add_point(attr(tag, "x"), attr(tag, "y"))
-
-            if not points:
+            bbox = content_bbox(svg)
+            if bbox is None:
                 return svg
-
-            min_x = min(x for x, _ in points)
-            min_y = min(y for _, y in points)
-            max_x = max(x for x, _ in points)
-            max_y = max(y for _, y in points)
+            min_x, min_y, max_x, max_y = bbox
 
             if max_x <= min_x or max_y <= min_y:
                 return svg
 
-            pad = 4.0
+            pad = 3.0
             min_x -= pad
             min_y -= pad
             max_x += pad
             max_y += pad
-            width = max_x - min_x
-            height = max_y - min_y
-
-            svg = re.sub(r'\swidth="[^"]+"', f' width="{width:.4f}mm"', svg, count=1)
-            svg = re.sub(r'\sheight="[^"]+"', f' height="{height:.4f}mm"', svg, count=1)
-            svg = re.sub(
-                r'\sviewBox="[^"]+"',
-                f' viewBox="{min_x:.4f} {min_y:.4f} {width:.4f} {height:.4f}"',
-                svg,
-                count=1,
-            )
-            return svg
-
-
         def setup_skidl():
             reset()
             set_default_tool(KICAD9)

@@ -12,6 +12,8 @@ import {
   Paper,
   Divider,
   Tooltip,
+  IconButton,
+  Collapse,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
@@ -19,8 +21,12 @@ import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import MemoryIcon from '@mui/icons-material/Memory';
 import NotesIcon from '@mui/icons-material/Notes';
 import LightbulbIcon from '@mui/icons-material/Lightbulb';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { API_BASE_URL } from '../config.mjs';
 import { formatUserError } from '../lib/errorUtils';
+
+const COLLAPSE_KEY = 'circuit-explainer-collapsed';
 
 function SectionTitle({ icon, children }) {
   return (
@@ -33,10 +39,22 @@ function SectionTitle({ icon, children }) {
   );
 }
 
-export default function CircuitExplainer({ designId, circuitIr, initialExplanation }) {
+export default function CircuitExplainer({ designId, circuitIr, initialExplanation, fillHeight = false }) {
   const [explanation, setExplanation] = useState(initialExplanation || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // 收放状态跨刷新记忆（读取 localStorage 一次即定格，避免 SSR 不一致）
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try { setCollapsed(window.localStorage.getItem(COLLAPSE_KEY) === '1'); } catch { /* private mode */ }
+  }, []);
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try { window.localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  };
   // 设计刚生成完成时 initialExplanation 尚未就绪；只在没有缓存的解释时自动生成一次
   const requestedRef = useRef(Boolean(initialExplanation));
   const aliveRef = useRef(true);
@@ -45,6 +63,11 @@ export default function CircuitExplainer({ designId, circuitIr, initialExplanati
     aliveRef.current = true;
     return () => { aliveRef.current = false; };
   }, []);
+
+  // 设计被 chat 修改并重新生成后，design.circuit_explanation 是新解读 —— 同步进来
+  useEffect(() => {
+    setExplanation(initialExplanation || null);
+  }, [initialExplanation]);
 
   const load = async (refresh = false) => {
     setLoading(true);
@@ -91,39 +114,57 @@ export default function CircuitExplainer({ designId, circuitIr, initialExplanati
     <Paper
       elevation={0}
       sx={{
-        p: 2.5,
+        p: collapsed ? 1 : 2.5,
         border: '1px solid',
         borderColor: 'divider',
         height: 'fit-content',
-        maxHeight: 'calc(100vh - 140px)',
-        overflowY: 'auto',
-        position: 'sticky',
-        top: 16,
+        flexShrink: 0,
+        ...(fillHeight
+          ? { maxHeight: collapsed ? undefined : '58%', overflowY: 'auto' }
+          : { maxHeight: 'calc(100vh - 140px)', overflowY: 'auto', position: 'sticky', top: 16 }),
       }}
     >
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{ mb: collapsed ? 0 : 0.5, cursor: 'pointer', userSelect: 'none' }}
+        onClick={toggleCollapsed}
+      >
         <AutoAwesomeIcon color="primary" fontSize="small" />
         <Typography variant="subtitle1" fontWeight="bold" sx={{ flex: 1 }}>
           电路原理解读
         </Typography>
-        <Tooltip title={explanation ? '重新生成解读' : '生成解读'}>
-          <span>
+        {explanation && !collapsed && (
+          <Chip
+            size="small"
+            color={isRule ? 'default' : 'primary'}
+            variant="outlined"
+            label={isRule ? '结构分析' : 'AI 解读'}
+          />
+        )}
+        {explanation && !collapsed && !loading && (
+          <Tooltip title="重新生成解读">
             <Button
               size="small"
               variant="outlined"
-              startIcon={loading
-                ? <CircularProgress size={14} color="inherit" />
-                : <RefreshIcon />}
-              onClick={() => load(true)}
-              disabled={loading}
+              startIcon={<RefreshIcon />}
+              onClick={(e) => { e.stopPropagation(); load(true); }}
             >
-              {loading ? '生成中…' : '重新生成'}
+              重新生成
             </Button>
-          </span>
+          </Tooltip>
+        )}
+        {loading && !collapsed && <CircularProgress size={16} />}
+        <Tooltip title={collapsed ? '展开电路解读' : '收起电路解读'}>
+          <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleCollapsed(); }}>
+            {collapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}
+          </IconButton>
         </Tooltip>
       </Stack>
 
-      {explanation && (
+      <Collapse in={!collapsed} sx={{ width: '100%' }}>
+      {!explanation && (
         <Chip
           size="small"
           color={isRule ? 'default' : 'primary'}
@@ -274,6 +315,7 @@ export default function CircuitExplainer({ designId, circuitIr, initialExplanati
           )}
         </Box>
       )}
+      </Collapse>
     </Paper>
   );
 }

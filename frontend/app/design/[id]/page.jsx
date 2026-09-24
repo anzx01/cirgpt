@@ -22,7 +22,9 @@ import {
   TableCell,
   TableContainer,
   TableHead,
-  TableRow
+  TableRow,
+  IconButton,
+  Tooltip
 } from '@mui/material';
 import {
   Description as DescriptionIcon,
@@ -34,10 +36,12 @@ import {
   FactCheck as ValidationIcon,
   Download as DownloadIcon,
   Visibility as VisibilityIcon,
-  Bolt as PowerOnIcon
+  Bolt as PowerOnIcon,
+  ViewSidebar as ViewSidebarIcon
 } from '@mui/icons-material';
 import SchematicViewer from '../../../components/SchematicViewer';
 import CircuitExplainer from '../../../components/CircuitExplainer';
+import CircuitChat from '../../../components/CircuitChat';
 import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
 import BomViewer from '../../../components/BomViewer';
@@ -49,8 +53,8 @@ import { formatUserError } from '../../../lib/errorUtils';
 
 function TabPanel({ children, value, index }) {
   return (
-    <div role="tabpanel" hidden={value !== index}>
-      {value === index && <Box sx={{ py: 3 }}>{children}</Box>}
+    <div role="tabpanel" hidden={value !== index} style={value === index ? { height: '100%' } : undefined}>
+      {value === index && <Box sx={{ py: 1.5, height: '100%', overflowY: 'auto' }}>{children}</Box>}
     </div>
   );
 }
@@ -116,11 +120,23 @@ export default function DesignResultPage() {
   const [rawData, setRawData] = useState(null);
   const [rawLoading, setRawLoading] = useState(false);
   const [rawError, setRawError] = useState(null);
+  // 原理图专注模式：隐藏右侧解读+chat，原理图横向占满全宽
+  const [sidebarHidden, setSidebarHidden] = useState(false);
+  useEffect(() => {
+    try { setSidebarHidden(window.localStorage.getItem('design-sidebar-hidden') === '1'); } catch { /* private mode */ }
+  }, []);
+  const toggleSidebar = () => {
+    setSidebarHidden((prev) => {
+      const next = !prev;
+      try { window.localStorage.setItem('design-sidebar-hidden', next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   // 获取设计数据
   const fetchDesign = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/circuit/${designId}`);
+      const response = await fetch(`${API_BASE_URL}/circuit/${designId}`, { cache: 'no-store' });
 
       if (!response.ok) {
         throw new Error('无法获取设计数据，请检查设计ID是否正确');
@@ -364,101 +380,58 @@ export default function DesignResultPage() {
   const isProcessing = progress.status === 'processing' || progress.status === 'pending';
 
   return (
-    <Container maxWidth="xl" sx={{ py: 4 }}>
-      {/* 连接模式指示器 */}
-      {process.env.NODE_ENV === 'development' && (
-        <Box sx={{ mb: 2, display: 'flex', justifyContent: 'flex-end' }}>
-          <Chip
-            label={`连接模式: ${connectionMode === 'websocket' ? 'WebSocket' : connectionMode === 'polling' ? '轮询' : '连接中'}`}
-            size="small"
-            color={connectionMode === 'websocket' ? 'success' : 'default'}
-          />
-        </Box>
+    <Container maxWidth="xl" sx={{ py: 1, px: { lg: 2 }, height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* 一屏工作台模式：隐藏全局页脚与 main 默认内边距（仅本页生效） */}
+      <style>{'#app-footer{display:none!important}main{padding:0!important}'}</style>
+
+      {/* 连接模式指示器（仅非 WebSocket 时提示降级） */}
+      {process.env.NODE_ENV === 'development' && connectionMode !== 'websocket' && (
+        <Chip
+          label={`连接模式: ${connectionMode === 'polling' ? '轮询' : '连接中'}`}
+          size="small"
+          sx={{ alignSelf: 'flex-end', mb: 0.5, flexShrink: 0 }}
+        />
       )}
 
-      {/* Header */}
-      <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, flexWrap: 'wrap', gap: 2 }}>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="h4" fontWeight="bold" gutterBottom>
-              {design?.name
-                ? (
-                  <>
-                    {design.name}
-                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                      #{designId}
-                    </Typography>
-                  </>
-                )
-                : `电路设计 #${designId}`}
+      {/* Header（紧凑单行式） */}
+      <Paper elevation={2} sx={{ p: 1.25, mb: 1, flexShrink: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexWrap: 'wrap' }}>
+          <Typography variant="subtitle1" fontWeight="bold" noWrap sx={{ maxWidth: { md: 300 } }}
+            title={design?.name || `电路设计 #${designId}`}>
+            {design?.name || `电路设计 #${designId}`}
+            <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.75 }}>
+              #{designId}
             </Typography>
-            <Typography variant="body1" color="text.secondary" paragraph sx={{ wordBreak: 'break-word' }}>
-              {design?.description}
-            </Typography>
-            {design?.circuit_ir?.source?.prompt_version && (
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  color="primary"
-                  label={`prompt: ${design.circuit_ir.source.prompt_version}`}
-                />
-                {design.circuit_ir.source.model && (
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={`model: ${design.circuit_ir.source.model}`}
-                  />
-                )}
-                {Array.isArray(design.circuit_ir.subsystems) && design.circuit_ir.subsystems.length > 0 && (
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    color="secondary"
-                    label={`subsystems: ${design.circuit_ir.subsystems.length}`}
-                  />
-                )}
-                {Array.isArray(design.circuit_ir.open_questions) && design.circuit_ir.open_questions.length > 0 && (
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    color="warning"
-                    label={`open questions: ${design.circuit_ir.open_questions.length}`}
-                  />
-                )}
-              </Stack>
+          </Typography>
+          <Typography variant="body2" color="text.secondary" noWrap sx={{ flex: 1, minWidth: 100 }}
+            title={design?.description}>
+            {design?.description}
+          </Typography>
+          {design?.circuit_ir?.source?.prompt_version && (
+            <Chip size="small" variant="outlined" color="primary" label={`prompt: ${design.circuit_ir.source.prompt_version}`} />
+          )}
+          {Array.isArray(design?.circuit_ir?.subsystems) && design.circuit_ir.subsystems.length > 0 && (
+            <Chip size="small" variant="outlined" color="secondary" label={`子系统 ${design.circuit_ir.subsystems.length}`} />
+          )}
+          {!isProcessing && progress.status === 'completed' && (
+            <Chip size="small" color="success" variant="outlined" label="✓ 生成完成" />
+          )}
+          <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0, alignItems: 'center' }}>
+            <Button variant="outlined" size="small" startIcon={<VisibilityIcon />} onClick={handleOpenRaw} disabled={rawLoading}>
+              {rawLoading ? '加载中…' : '原始响应'}
+            </Button>
+            <Button variant="contained" size="small" onClick={() => router.push('/design')}>新设计</Button>
+            <Button variant="outlined" size="small" startIcon={<ProjectsIcon />} onClick={() => router.push('/projects')}>项目</Button>
+            <Button variant="outlined" size="small" startIcon={<HomeIcon />} onClick={() => router.push('/')}>首页</Button>
+            {!isProcessing && (
+              <Chip label={`$${design?.estimated_cost?.toFixed(2) || '0.00'}`} color="success" size="small" />
             )}
-          </Box>
-          <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<VisibilityIcon />}
-              onClick={handleOpenRaw}
-              disabled={rawLoading}
-            >
-              {rawLoading ? 'Loading…' : 'Show raw DeepSeek response'}
-            </Button>
-            <Button
-              variant="outlined"
-              startIcon={<ProjectsIcon />}
-              onClick={() => router.push('/projects')}
-            >
-              项目列表
-            </Button>
-            <Button
-              variant="outlined"
-              startIcon={<HomeIcon />}
-              onClick={() => router.push('/')}
-            >
-              返回首页
-            </Button>
           </Stack>
         </Box>
 
         {isProcessing && (
-          <Box sx={{ mt: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+          <Box sx={{ mt: 1 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
               <Typography variant="body2" color="text.secondary">
                 {progress.message}
               </Typography>
@@ -466,14 +439,10 @@ export default function DesignResultPage() {
                 {progress.progress}%
               </Typography>
             </Box>
-            <LinearProgress
-              variant="determinate"
-              value={progress.progress}
-              sx={{ height: 10, borderRadius: 5 }}
-            />
+            <LinearProgress variant="determinate" value={progress.progress} sx={{ height: 8, borderRadius: 4 }} />
             {pollingManager && (
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                已用时间: {Math.round(pollingManager.getElapsedTime() / 1000)}秒 / 超时限制: {Math.round(pollingManager.maxDuration / 1000)}秒
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                已用 {Math.round(pollingManager.getElapsedTime() / 1000)}s / 上限 {Math.round(pollingManager.maxDuration / 1000)}s
               </Typography>
             )}
           </Box>
@@ -486,105 +455,99 @@ export default function DesignResultPage() {
           const partial = !isGenericDraft && (unfulfilled.length > 0 || v.requirements_fulfilled === false);
           if (isGenericDraft) {
             return (
-              <Alert severity="warning" sx={{ mt: 2 }}>
-                <Typography fontWeight="bold">该结果是通用占位草稿，并非按你的原始需求实现！</Typography>
-                <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  系统未能将你的描述解析为受支持的电路类型，以下结果是规则兜底生成的占位拓扑，
-                  不包含你要求的具体电路内容，请勿直接使用：
-                </Typography>
-                <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                  {(v.warnings || []).map((w, i) => (
-                    <li key={i} style={{ fontSize: '0.875rem' }}>{w}</li>
+              <Alert severity="warning" sx={{ mt: 1, py: 0.5, '& .MuiAlert-message': { minWidth: 0 } }}>
+                <Typography variant="body2" fontWeight="bold">该结果是通用占位草稿，并非按你的原始需求实现，请勿直接使用：</Typography>
+                <Stack spacing={0}>
+                  {(v.warnings || []).slice(0, 3).map((w, i) => (
+                    <Typography key={i} variant="caption">• {w}</Typography>
                   ))}
-                </ul>
+                </Stack>
               </Alert>
             );
           }
           if (partial) {
             return (
-              <Alert severity="warning" sx={{ mt: 2 }}>
-                <Typography fontWeight="bold">电路已按描述生成，但有部分内容未能实现</Typography>
-                <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                  {(unfulfilled.length
-                    ? unfulfilled
-                    : ['部分需求未能完全实现，详见「验证」页的警告列表']
-                  ).map((w, i) => (
-                    <li key={i} style={{ fontSize: '0.875rem' }}>{w}</li>
-                  ))}
-                </ul>
+              <Alert severity="warning" sx={{ mt: 1, py: 0.5 }}>
+                <Typography variant="body2">
+                  电路已按描述生成，但有部分内容未能实现——{unfulfilled[0] || '详见「验证」页'}
+                </Typography>
               </Alert>
             );
           }
-          return (
-            <Alert severity="success" sx={{ mt: 2 }}>
-              设计生成成功完成！
-            </Alert>
-          );
+          return null;
         })()}
       </Paper>
 
-      {/* Results Tabs */}
-      <Paper elevation={2} sx={{ mb: 3 }}>
-        <Tabs
-          value={tabValue}
-          onChange={handleTabChange}
-          variant="scrollable"
-          scrollButtons="auto"
-          sx={{ borderBottom: 1, borderColor: 'divider' }}
-        >
-          <Tab
-            icon={<DescriptionIcon />}
-            label="原理图"
-            disabled={isProcessing}
-          />
-          <Tab
-            icon={<SimulationIcon />}
-            label="仿真"
-            disabled={isProcessing || !(design?.simulation_results || design?.circuit_ir)}
-          />
-          <Tab
-            icon={<PcbIcon />}
-            label="PCB布局"
-            disabled={isProcessing || !design?.pcb_layout}
-          />
-          <Tab
-            icon={<BomIcon />}
-            label="物料清单"
-            disabled={isProcessing || !design?.bom}
-          />
-          <Tab
-            icon={<ValidationIcon />}
-            label="验证"
-            disabled={isProcessing || !design?.validation}
-          />
-          <Tab
-            icon={<PowerOnIcon />}
-            label="通电测试"
-            disabled={isProcessing || !design?.circuit_ir}
-          />
-        </Tabs>
+      {/* Results Tabs（flex 工作台容器） */}
+      <Paper elevation={2} sx={{ mb: 0, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', minHeight: 44, flexShrink: 0, borderBottom: 1, borderColor: 'divider' }}>
+          <Tabs
+            value={tabValue}
+            onChange={handleTabChange}
+            variant="scrollable"
+            scrollButtons="auto"
+            sx={{
+              flex: 1, minHeight: 44,
+              '& .MuiTab-root': { minHeight: 44, py: 0.5 },
+            }}
+          >
+            <Tab icon={<DescriptionIcon />} iconPosition="start" label="原理图" disabled={isProcessing} />
+            <Tab icon={<SimulationIcon />} iconPosition="start" label="仿真" disabled={isProcessing || !(design?.simulation_results || design?.circuit_ir)} />
+            <Tab icon={<PcbIcon />} iconPosition="start" label="PCB布局" disabled={isProcessing || !design?.pcb_layout} />
+            <Tab icon={<BomIcon />} iconPosition="start" label="物料清单" disabled={isProcessing || !design?.bom} />
+            <Tab icon={<ValidationIcon />} iconPosition="start" label="验证" disabled={isProcessing || !design?.validation} />
+            <Tab icon={<PowerOnIcon />} iconPosition="start" label="通电测试" disabled={isProcessing || !design?.circuit_ir} />
+          </Tabs>
+          <Tooltip title={sidebarHidden ? '显示右侧解读与对话' : '隐藏右侧栏，原理图占满全宽'}>
+            <IconButton
+              onClick={toggleSidebar}
+              size="small"
+              sx={{ mr: 1, color: sidebarHidden ? 'primary.main' : 'text.secondary' }}
+              aria-label="toggle sidebar"
+            >
+              <ViewSidebarIcon />
+            </IconButton>
+          </Tooltip>
+        </Box>
 
-        <TabPanel value={tabValue} index={0}>
-          <Grid container spacing={2} sx={{ py: 1 }}>
-            <Grid item xs={12} lg={8} xl={9}>
-              <SchematicViewer svg={design?.schematic_svg} pages={design?.schematic_pages} />
+        <Box sx={{ flex: 1, minHeight: 0 }}>
+          <TabPanel value={tabValue} index={0}>
+            <Grid container spacing={1.5} sx={{ height: '100%' }}>
+              <Grid item xs={12} lg={sidebarHidden ? 12 : 8} sx={{ height: '100%' }}>
+                <SchematicViewer svg={design?.schematic_svg} pages={design?.schematic_pages} fillHeight />
+              </Grid>
+              {!sidebarHidden && (
+                <Grid item xs={12} lg={4} sx={{ height: '100%' }}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 1.5, minHeight: 0 }}>
+                  <CircuitExplainer
+                    designId={designId}
+                    circuitIr={design?.circuit_ir}
+                    initialExplanation={design?.circuit_explanation}
+                    fillHeight
+                  />
+                  <Box sx={{ flex: 1, minHeight: 180 }}>
+                    <CircuitChat
+                      designId={designId}
+                      chatMessages={design?.chat_messages}
+                      designStatus={design?.status}
+                      onRefresh={() => fetchDesign()}
+                      fillHeight
+                    />
+                  </Box>
+                </Box>
+              </Grid>
+              )}
             </Grid>
-            <Grid item xs={12} lg={4} xl={3}>
-              <CircuitExplainer
-                designId={designId}
-                circuitIr={design?.circuit_ir}
-                initialExplanation={design?.circuit_explanation}
-              />
-            </Grid>
-          </Grid>
-        </TabPanel>
+          </TabPanel>
 
         <TabPanel value={tabValue} index={1}>
           <SimulationViewer results={design?.simulation_results} designId={designId} />
         </TabPanel>
 
         <TabPanel value={tabValue} index={2}>
-          <PcbViewer layout={design?.pcb_layout} image={design?.pcb_image} />
+          <Box sx={{ height: '100%' }}>
+            <PcbViewer layout={design?.pcb_layout} image={design?.pcb_image} fillHeight />
+          </Box>
         </TabPanel>
 
         <TabPanel value={tabValue} index={3}>
@@ -680,33 +643,8 @@ export default function DesignResultPage() {
         <TabPanel value={tabValue} index={5}>
           <PowerOnTest designId={designId} hasIr={!!design?.circuit_ir} />
         </TabPanel>
-      </Paper>
-
-      {/* Actions */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-          <Button
-            variant="outlined"
-            startIcon={<HomeIcon />}
-            onClick={() => router.push('/')}
-          >
-            返回首页
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => router.push('/design')}
-          >
-            创建新设计
-          </Button>
         </Box>
-        {!isProcessing && (
-          <Chip
-            label={`预估成本: $${design?.estimated_cost?.toFixed(2) || '0.00'}`}
-            color="success"
-            size="medium"
-          />
-        )}
-      </Box>
+      </Paper>
 
       <RawDeepseekDialog
         open={rawOpen}

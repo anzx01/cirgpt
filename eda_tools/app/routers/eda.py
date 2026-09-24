@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional
 import logging
 import sys
 import os
+import tempfile
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -386,8 +387,78 @@ async def generate_pcb_endpoint(request: PCBRequest) -> Dict[str, Any]:
 
         layout = generate_pcb(netlist, circuit_ir=request.circuit_ir)
         if request.circuit_ir:
-            layout["kicad_pcb"] = generate_kicad_pcb_preview(request.circuit_ir)
-            layout["manufacturing_status"] = "experimental_preview_only"
+            # Manufacturable pipeline: real board file -> Freerouting ->
+            # DRC -> Gerbers. Any failure degrades honestly to the preview
+            # path instead of pretending to be production-ready.
+            try:
+                from kicad.pcb_manufacturing import (  # noqa: PLC0415
+                    write_kicad_pcb_file, route_board, run_drc,
+                    export_manufacturing_files,
+                )
+                mfg_dir = tempfile.mkdtemp(prefix="cirgpt_mfg_")
+                pcb_path = os.path.join(mfg_dir, "board.kicad_pcb")
+                write_kicad_pcb_file(layout, pcb_path)
+
+                route_result = route_board(pcb_path, timeout_s=900)
+                if route_result.get("status") != "success":
+                    raise RuntimeError(
+                        f"routing failed: {route_result.get('stage')} {str(route_result.get('detail'))[:200]}"
+                    )
+
+                drc = run_drc(pcb_path, mfg_dir)
+                mfg = export_manufacturing_files(pcb_path, mfg_dir)
+
+                hard_violations = int(drc.get("violations") or 0)
+                layout["kicad_pcb"] = open(pcb_path, encoding="utf-8").read()
+                layout["manufacturing"] = {
+                    "router": "freerouting",
+                    "routed_tracks_file": "board.kicad_pcb",
+                    "drc": {k: v for k, v in drc.items() if k != "report_path"},
+                    "gerber_file_count": mfg.get("file_count"),
+                }
+                layout["manufacturing_status"] = (
+                    "production_ready" if hard_violations == 0
+                    else "routed_with_violations"
+                )
+
+                # Routed render replaces the preview in the PCB tab.
+                import base64 as _b64  # noqa: PLC0415
+                png_3d = os.path.join(mfg_dir, "pcb_3d.png")
+                routed_svg = os.path.join(mfg_dir, "pcb_routed.svg")
+                if os.path.exists(png_3d):
+                    # Photorealistic 3D render: the board reads instantly
+                    # (green mask, real parts) where a line-frame SVG did not.
+                    layout["visualization"] = _b64.b64encode(
+                        open(png_3d, "rb").read()
+                    ).decode()
+                elif os.path.exists(routed_svg):
+                    from kicad.pcb_manufacturing import crop_svg_viewbox  # noqa: PLC0415
+                    # KiCad exports a full A4 page; crop to the board so the
+                    # PCB tab shows it big and centered instead of a tiny
+                    # board lost in a corner of the sheet.
+                    layout["visualization"] = crop_svg_viewbox(
+                        open(routed_svg, encoding="utf-8").read()
+                    )
+
+                # Text manufacturing files travel as artifacts; the zip is
+                # kept on disk and referenced by path.
+                layout["_mfg_artifacts"] = {}
+                for name in ("drc.json", "positions.pos"):
+                    p = os.path.join(mfg_dir, name)
+                    if os.path.exists(p):
+                        layout["_mfg_artifacts"][name] = open(p, encoding="utf-8", errors="replace").read()
+                layout["_mfg_artifacts"]["board.kicad_pcb"] = layout["kicad_pcb"]
+                gdir = os.path.join(mfg_dir, "gerbers")
+                if os.path.isdir(gdir):
+                    for fname in sorted(os.listdir(gdir)):
+                        layout["_mfg_artifacts"][f"gerber_{fname}"] = open(
+                            os.path.join(gdir, fname), encoding="utf-8", errors="replace"
+                        ).read()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Manufacturing pipeline degraded: {exc}")
+                layout["kicad_pcb"] = generate_kicad_pcb_preview(request.circuit_ir)
+                layout["manufacturing_status"] = "experimental_preview_only"
+                layout["manufacturing_error"] = str(exc)[:300]
 
         return {
             "success": True,

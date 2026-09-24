@@ -9,12 +9,17 @@ import {
   IconButton,
   Tooltip,
   Chip,
-  Stack
+  Stack,
+  Dialog,
+  DialogContent
 } from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import FitScreenIcon from '@mui/icons-material/FitScreen';
 import DownloadIcon from '@mui/icons-material/Download';
+import FullscreenIcon from '@mui/icons-material/Fullscreen';
+import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
+import CloseIcon from '@mui/icons-material/Close';
 import { downloadSVG } from '../lib/downloadUtils';
 
 function PageChip({ label, count, active, onClick }) {
@@ -30,10 +35,11 @@ function PageChip({ label, count, active, onClick }) {
   );
 }
 
-export default function SchematicViewer({ svg, pages }) {
+export default function SchematicViewer({ svg, pages, fillHeight = false }) {
   const [zoom, setZoom] = useState(1);
   const [error, setError] = useState(null);
   const [pageIndex, setPageIndex] = useState(0);
+  const [fullscreen, setFullscreen] = useState(false);
   const containerRef = useRef(null);
   const userZoomedRef = useRef(false);
 
@@ -135,11 +141,14 @@ export default function SchematicViewer({ svg, pages }) {
     );
   }
 
-  return (
-    <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
+  // Shared body: rendered either inline (normal layout) or inside the
+  // fullscreen dialog — never both at once, so containerRef stays unique
+  // and the fit logic re-runs for whichever container is live.
+  const viewerBody = (
+    <>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: fillHeight ? 0.5 : 2, flexWrap: 'wrap', gap: 1 }}>
         <Box>
-          <Typography variant="h6" fontWeight="bold">
+          <Typography variant={fillHeight ? 'subtitle1' : 'h6'} fontWeight="bold">
             Circuit Schematic
             {isPaged && pages.layout === 'subsystem-paged' && (
               <Typography component="span" variant="caption" color="primary" sx={{ ml: 1 }}>
@@ -148,7 +157,7 @@ export default function SchematicViewer({ svg, pages }) {
             )}
           </Typography>
           {isPaged && currentPage?.purpose && (
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 480, display: 'block' }}>
               {currentPage.purpose}
             </Typography>
           )}
@@ -181,11 +190,16 @@ export default function SchematicViewer({ svg, pages }) {
               <DownloadIcon />
             </IconButton>
           </Tooltip>
+          <Tooltip title={fullscreen ? '退出全屏' : '全屏查看原理图'}>
+            <IconButton onClick={() => setFullscreen((v) => !v)} size="small">
+              {fullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+            </IconButton>
+          </Tooltip>
         </Box>
       </Box>
 
       {isPaged && (
-        <Box sx={{ mb: 2 }}>
+        <Box sx={{ mb: fillHeight ? 0.5 : 2, mt: fillHeight ? 0.5 : 0 }}>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             {pageList.map((page, index) => (
               <PageChip
@@ -206,17 +220,20 @@ export default function SchematicViewer({ svg, pages }) {
         sx={{
           p: 2,
           bgcolor: 'white',
-          height: { xs: 400, md: 600 },
+          height: fillHeight ? { xs: 300, md: '100%' } : { xs: 400, md: 600 },
+          minHeight: fillHeight ? 160 : undefined,
           overflow: 'auto',
           border: '1px solid #e0e0e0',
-          borderRadius: 1
+          borderRadius: 1,
+          ...(fillHeight ? { flex: 1 } : {}),
         }}
       >
         <Box
           dangerouslySetInnerHTML={{ __html: currentSvg }}
           sx={{
             width: '100%',
-            minHeight: { xs: 350, md: 500 },
+            minHeight: fillHeight ? undefined : { xs: 350, md: 500 },
+            height: fillHeight ? '100%' : undefined,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -230,13 +247,46 @@ export default function SchematicViewer({ svg, pages }) {
         />
       </Paper>
 
-      <Box sx={{ mt: 2 }}>
-        <Typography variant="body2" color="text.secondary">
-          {isPaged
-            ? 'Each subsystem is rendered on its own page. Use the chips above to switch layers; the overview page lists every layer with its components and any open questions.'
-            : 'Use the zoom controls to inspect the schematic, or download the KiCad-exported SVG.'}
-        </Typography>
+      {!fillHeight && (
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" color="text.secondary">
+            {isPaged
+              ? 'Each subsystem is rendered on its own page. Use the chips above to switch layers; the overview page lists every layer with its components and any open questions.'
+              : 'Use the zoom controls to inspect the schematic, or download the KiCad-exported SVG.'}
+          </Typography>
+        </Box>
+      )}
+    </>
+  );
+
+  return (
+    <>
+      <Box sx={fillHeight
+        ? { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }
+        : undefined}>
+        {fullscreen ? (
+          <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Typography variant="body2" color="text.secondary">
+              原理图正在全屏查看中…
+            </Typography>
+          </Box>
+        ) : viewerBody}
       </Box>
-    </Box>
+
+      <Dialog
+        fullScreen
+        open={fullscreen}
+        onClose={() => setFullscreen(false)}
+        aria-label="全屏查看原理图"
+      >
+        <DialogContent sx={{ p: 1.5, display: 'flex', flexDirection: 'column', height: '100%' }}>
+          {fullscreen && (
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
+              {viewerBody}
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

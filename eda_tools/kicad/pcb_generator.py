@@ -35,11 +35,16 @@ _FOOTPRINT_GEOM: Dict[str, Dict[str, Any]] = {
     "DIP-14": dict(body=(19.4, 6.7), pads=14, pitch=2.54, row=7.62, pad=(1.6, 1.8), dip=True),
     "DIP-16": dict(body=(21.9, 6.7), pads=16, pitch=2.54, row=7.62, pad=(1.6, 1.8), dip=True),
     "DIP-20": dict(body=(26.9, 6.7), pads=20, pitch=2.54, row=7.62, pad=(1.6, 1.8), dip=True),
+    "Fuse_5x20mm": dict(body=(20.0, 5.0), pads=2, pitch=20.0, pad=(1.8, 2.2)),
+    "Varistor_Disc": dict(body=(9.0, 5.6), pads=2, pitch=5.0, pad=(1.6, 2.0)),
+    "Buzzer": dict(body=(12.0, 7.5), pads=2, pitch=7.75, pad=(1.6, 1.6)),
+    "SOT-23": dict(body=(2.9, 2.4), pads=3, pitch=0.95, pad=(0.55, 1.0)),
     # Registry real parts (footprint strings come from _REAL_PARTS)
-    "QFN-32": dict(body=(4.0, 4.0), pads=32, pitch=0.5, pad=(0.45, 0.28), quad=True),
+    "QFN-32": dict(body=(4.0, 4.0), pads=32, pitch=0.5, pad=(0.28, 0.6), quad=True,
+                   ep_pad=(2.2, 2.2)),
     "SOT-223": dict(body=(6.5, 3.5), pads=4, pitch=2.3, pad=(1.0, 1.7), sot223=True),
     "USB_C_Receptacle_HRO": dict(
-        body=(8.94, 7.35), pads=16, pitch=1.0, row=5.5, pad=(0.8, 1.2), dualrow=True
+        body=(8.94, 7.35), pads=16, pitch=1.0, row=5.5, pad=(0.8, 0.55), dualrow=True
     ),
 }
 _DEFAULT_GEOM = dict(body=(5.0, 2.5), pads=2, pitch=5.0, pad=(1.6, 2.0))
@@ -82,7 +87,9 @@ def _pads_local(geom: Dict[str, Any]) -> List[Tuple[float, float, float, float]]
         per = n // 4
         span = (per - 1) * pitch
         off = span / 2
-        e = float(geom["body"][0]) / 2 + 0.2
+        # corner clearance: pads on adjacent edges must not overlap as
+        # rectangles, so keep them well clear of the 45-degree corner zone
+        e = float(geom["body"][0]) / 2 + 0.5
         for i in range(per):
             pads.append((-e, -off + i * pitch, ph, pw))      # left 1..per
         for i in range(per):
@@ -91,6 +98,9 @@ def _pads_local(geom: Dict[str, Any]) -> List[Tuple[float, float, float, float]]
             pads.append((e, off - i * pitch, ph, pw))         # right 2per+1..
         for i in range(per):
             pads.append((off - i * pitch, -e, pw, ph))        # top 3per+1..
+        if geom.get("ep_pad"):
+            ew, eh = geom["ep_pad"]
+            pads.append((0.0, 0.0, ew, eh))                   # center EP pad
     elif geom.get("sot223"):
         # AMS1117 SOT-223: pad 1 = GND, pad 2 = VO (the big tab), pad 3 = VI.
         # Three leads on the bottom edge, tab on top; pad order must match the
@@ -406,7 +416,9 @@ class PCBGenerator:
         if not components:
             return []
 
-        clearance = 7.0  # mm around each body for routing room
+        clearance = 4.0  # mm around each body for routing room (0.2mm
+        # clearance rules leave room for ~3 tracks in a 4mm channel; 7mm
+        # once spread 26 parts across a 277mm sheet
         cells = []
         for comp in components:
             bw, bh = _geom_for(comp.get("footprint", "")).get("body", (5.0, 2.5))
@@ -429,7 +441,7 @@ class PCBGenerator:
                 best_plan = (score, cols, col_w, row_h)
 
         _, cols, col_w, row_h = best_plan
-        margin = 10.0  # mm board edge margin
+        margin = 7.0  # mm board edge margin
 
         placed = []
         for i, comp in enumerate(components):
@@ -899,6 +911,15 @@ def _footprint_for(comp_type: str, value: str, pins: int = 0) -> str:
     if comp_type == "J":
         n = max(pins or 2, 2)
         return f"Connector_PinHeader_2.54mm:PinHeader_1x{n:02d}_P2.54mm_Vertical"
+    if comp_type == "F":
+        return "Fuse:Fuse_5x20mm_Horizontal"
+    if comp_type == "RV":
+        return "Varistor:Varistor_Disc_D9mm_W5.6mm_P5mm"
+    if comp_type == "BZ":
+        return "Buzzer_Beeper:Buzzer_12x7.5RM7.75"
+    if comp_type == "Q" and "mmbt" in (value or "").lower():
+        # MMBT* is the SOT-23 version of the 2N/BC numbered TO-92 parts
+        return "Package_TO_SOT_SMD:SOT-23"
     footprints = {
         "R": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
         "C": "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
@@ -912,6 +933,16 @@ def _footprint_for(comp_type: str, value: str, pins: int = 0) -> str:
 
 _IR_TYPE_LETTER = {
     "resistor": "R",
+    "fuse": "F",
+    "varistor": "RV",
+    "buzzer": "BZ",
+    "speaker": "BZ",
+    "npn_transistor": "Q",
+    "pnp_transistor": "Q",
+    "nmos_transistor": "Q",
+    "pmos_transistor": "Q",
+    "mosfet": "Q",
+    "bjt": "Q",
     "capacitor": "C",
     "inductor": "L",
     "led": "D",
@@ -938,14 +969,28 @@ def _components_from_ir(circuit_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     ir, _drops = _expand_real_part_connections(circuit_ir)
     pin_net: Dict[str, Dict[str, str]] = {}
+    _gnd_family = {"0", "gnd", "vss", "dgnd", "agnd"}
     for net in ir.get("nets") or []:
         if not isinstance(net, dict):
             continue
         nm = str(net.get("name") or "")
-        for conn in net.get("connections") or []:
-            ref, _, pin = str(conn).rpartition(".")
+        conns = [str(c) for c in (net.get("connections") or [])]
+        # A net that ties to ground through a bare '0' member (e.g. SHIELD ->
+        # [J3.7, "0"]) is electrically GND; keeping it separate made DRC flag
+        # the shield pads as a two-net short.
+        is_gnd = nm.strip().lower() in _gnd_family or any(
+            c.strip() == "0" for c in conns
+        ) or (
+            # shield-only net after expansion (SHIELD -> [J3.SH]) ties the
+            # USB shell to board ground - the standard practice
+            nm.strip().upper() == "SHIELD"
+            and all(str(c).rpartition(".")[2].upper() in {"SH", "SHIELD"} for c in conns)
+        )
+        target = "GND" if is_gnd else nm
+        for conn in conns:
+            ref, _, pin = conn.rpartition(".")
             if ref and pin:
-                pin_net.setdefault(ref, {})[pin] = nm
+                pin_net.setdefault(ref, {})[pin] = target
 
     components: List[Dict[str, Any]] = []
     for comp in ir.get("components") or []:
@@ -961,7 +1006,21 @@ def _components_from_ir(circuit_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
                 key=_pin_sort_key,
             )
             nets = pin_net.get(ref, {})
-            nodes = [nets.get(p, f"NC${ref}.{p}") for p in pins]
+            # Expanded connections already use REAL library pin numbers
+            # (U3.28 = U0TXD). For numeric-pin parts the QFN/DIP pad k IS
+            # pin k, so bind nets by physical number (the registered pin
+            # list is a sparse subset and must never be re-indexed onto
+            # pads). Letter-pin parts (USB-C A1/B1...) keep the sorted-list
+            # order their dual-row layout was designed for.
+            if all(str(p).isdigit() for p in pins):
+                geom_pads = int(_geom_for(part["footprint"]).get("pads", len(pins)))
+                if _geom_for(part["footprint"]).get("ep_pad"):
+                    geom_pads += 1
+                nodes = [
+                    nets.get(str(k), f"NC${ref}.{k}") for k in range(1, geom_pads + 1)
+                ]
+            else:
+                nodes = [nets.get(p, f"NC${ref}.{p}") for p in pins]
             components.append({
                 "name": ref,
                 "type": "U",
@@ -979,7 +1038,16 @@ def _components_from_ir(circuit_ir: Dict[str, Any]) -> List[Dict[str, Any]]:
         pin_count = max(
             [int(p) for p in nets if str(p).isdigit()] + [n_pins]
         )
-        nodes = [nets.get(str(k), f"NC${ref}.{k}") for k in range(1, pin_count + 1)]
+        # IR may wire pins by NAME (Q1.B, J3.D+): the component's own node
+        # list holds pin i+1's label, so fall back from the numeric lookup
+        # to the label lookup before declaring the pad unconnected.
+        labels = [str(n) for n in (comp.get("nodes") or [])]
+        nodes = [
+            nets.get(str(k))
+            or (nets.get(labels[k - 1]) if k - 1 < len(labels) else None)
+            or f"NC${ref}.{k}"
+            for k in range(1, pin_count + 1)
+        ]
         components.append({
             "name": ref,
             "type": letter,

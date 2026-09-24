@@ -304,12 +304,23 @@ def _generic_netlist(ir: Dict[str, Any]) -> str:
 
     used_refs: set[str] = set()
     counters: Dict[str, int] = {}
+    nets = ir.get("nets") or []
+    # ref -> {pin(index or name): net name}; lets X-subcircuit lines resolve
+    # their nodes to real net names instead of dangling on pin labels.
+    pin_net: Dict[str, Dict[str, str]] = {}
+    for net in nets:
+        if not isinstance(net, dict):
+            continue
+        nm = _safe_node(net.get("name", "NET"))
+        for conn in net.get("connections", []):
+            r, _, p = str(conn).rpartition(".")
+            if r and p:
+                pin_net.setdefault(r, {})[p] = nm
     for component in ir.get("components", []):
-        line = _generic_component_line(component, counters, used_refs)
+        line = _generic_component_line(component, counters, used_refs, pin_net)
         if line:
             lines.append(line)
 
-    nets = ir.get("nets") or []
     if nets:
         lines.extend(["", "* Nets"])
         for net in nets:
@@ -327,6 +338,7 @@ def _generic_component_line(
     component: Dict[str, Any],
     counters: Dict[str, int],
     used_refs: set[str],
+    pin_net: Dict[str, Dict[str, str]] | None = None,
 ) -> str:
     if not isinstance(component, dict):
         return ""
@@ -388,7 +400,15 @@ def _generic_component_line(
         n1, n2, n3, n4 = _pad_nodes(nodes, 4)
         return f"{ref} {n1} {n2} {n3} {n4} {value}"
 
-    return f"{ref} {' '.join(nodes)} {value}"
+    # X line (subcircuit / unmodelled IC): component nodes hold PIN LABELS
+    # ("IN+", "CS"), not net names - using them verbatim once left an ADC
+    # input dangling while the driver amp's OUT net went nowhere. Resolve
+    # each node positionally: node i is pin i+1, so look up that pin in the
+    # IR net table first (by index, then by label), falling back to the
+    # label itself.
+    nets_of = (pin_net or {}).get(str(component.get("ref") or ""), {})
+    resolved = [nets_of.get(str(i + 1)) or nets_of.get(nd) or nd for i, nd in enumerate(nodes)]
+    return f"{ref} {' '.join(resolved)} {value}"
 
 
 def _generic_prefix(component_type: str) -> str:

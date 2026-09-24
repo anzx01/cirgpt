@@ -26,6 +26,8 @@ import subprocess
 import sys
 import tempfile
 import uuid
+
+from svg_bbox import content_bbox
 from math import cos, radians, sin
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -1769,91 +1771,23 @@ def _plan_wire_routes(
     return plans
 
 def _crop_svg_to_content(svg: str) -> str:
-    """Crop KiCad's page-sized SVG viewBox down to visible schematic content."""
+    """Crop KiCad's page-sized SVG viewBox down to visible schematic content.
+
+    Uses svg_bbox.content_bbox, which walks the XML tree and applies the
+    transform stack — KiCad 10 exports rotated symbols/labels inside
+    <g transform="rotate(...)"> groups whose raw coordinates are NOT where
+    they render (a regex scan once trusted them and left ~185mm phantom
+    margin on one sheet).
+    """
     if not svg:
         return svg
 
-    number = r"[-+]?(?:\d+\.\d+|\d+|\.\d+)(?:[eE][-+]?\d+)?"
-    points: List[Tuple[float, float]] = []
-
-    def add_point(x: Any, y: Any) -> None:
-        try:
-            points.append((float(x), float(y)))
-        except (TypeError, ValueError):
-            pass
-
-    def attr(tag: str, name: str) -> Optional[str]:
-        match = re.search(rf'\b{name}="([^"]+)"', tag)
-        return match.group(1) if match else None
-
-    def hidden(tag: str) -> bool:
-        return (
-            'opacity="0"' in tag
-            or 'stroke-opacity="0"' in tag
-            or 'display="none"' in tag
-            or 'visibility="hidden"' in tag
-        )
-
-    for tag in re.findall(r"<path\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-        if hidden(tag):
-            continue
-        values = re.findall(number, attr(tag, "d") or "")
-        for i in range(0, len(values) - 1, 2):
-            add_point(values[i], values[i + 1])
-
-    for tag in re.findall(r"<(?:polyline|polygon)\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-        if hidden(tag):
-            continue
-        values = re.findall(number, attr(tag, "points") or "")
-        for i in range(0, len(values) - 1, 2):
-            add_point(values[i], values[i + 1])
-
-    for tag in re.findall(r"<line\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-        if hidden(tag):
-            continue
-        add_point(attr(tag, "x1"), attr(tag, "y1"))
-        add_point(attr(tag, "x2"), attr(tag, "y2"))
-
-    for tag in re.findall(r"<rect\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-        if hidden(tag):
-            continue
-        try:
-            x, y = float(attr(tag, "x") or 0), float(attr(tag, "y") or 0)
-            w, h = float(attr(tag, "width") or 0), float(attr(tag, "height") or 0)
-        except ValueError:
-            continue
-        if x == 0 and y == 0 and w > 200 and h > 150:
-            continue
-        add_point(x, y)
-        add_point(x + w, y + h)
-
-    for tag in re.findall(r"<circle\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-        if hidden(tag):
-            continue
-        try:
-            cx, cy = float(attr(tag, "cx") or 0), float(attr(tag, "cy") or 0)
-            r = float(attr(tag, "r") or 0)
-        except ValueError:
-            continue
-        add_point(cx - r, cy - r)
-        add_point(cx + r, cy + r)
-
-    for tag in re.findall(r"<text\b[^>]*>", svg, flags=re.IGNORECASE | re.DOTALL):
-        if hidden(tag):
-            continue
-        add_point(attr(tag, "x"), attr(tag, "y"))
-
-    if not points:
+    bbox = content_bbox(svg)
+    if bbox is None:
         return svg
+    min_x, min_y, max_x, max_y = bbox
 
-    min_x = min(x for x, _ in points)
-    min_y = min(y for _, y in points)
-    max_x = max(x for x, _ in points)
-    max_y = max(y for _, y in points)
-    if max_x <= min_x or max_y <= min_y:
-        return svg
-
-    pad = 4.0
+    pad = 3.0
     min_x, min_y, max_x, max_y = min_x - pad, min_y - pad, max_x + pad, max_y + pad
     width, height = max_x - min_x, max_y - min_y
     svg = re.sub(r'\swidth="[^"]+"', f' width="{width:.4f}mm"', svg, count=1)
@@ -1993,12 +1927,11 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
         ref = str(comp.get("ref") or "")
         stack_extra[ref] = (len(needed_units(ref, f"{lib}:{sym}")) - 1) * UNIT_STACK_DY
 
-    # Layout: one column per subsystem (IR order), components stacked. Wide
-    # ICs (28-pin DIPs etc.) need generous pitch; retries with larger spacing
-    # if any two placed pins land on the same coordinate. Subsystem groups are
-    # packed into a balanced grid (target ~sqrt(n) columns) so an IR whose
-    # groups are tiny or missing still gets a sane sheet instead of one
-    # giant column.
+    # Layout: horizontal-first. Each subsystem starts its own column and
+    # columns are capped at a few rows, so the sheet spreads left-to-right
+    # into a wide, screen-friendly strip instead of stacking into a tall
+    # block. Wide ICs (28-pin DIPs etc.) need generous pitch; retries with
+    # larger spacing if any two placed pins land on the same coordinate.
     groups: List[Tuple[str, List[Dict[str, Any]]]] = []
     by_sub: Dict[str, List[Dict[str, Any]]] = {}
     for comp, _lib, _sym in placed:
@@ -2008,17 +1941,30 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
             groups.append((sub, by_sub[sub]))
         by_sub[sub].append(comp)
 
-    n = len(placed)
-    target_cols = 2
-    while target_cols * target_cols < n:
-        target_cols += 1
-    max_rows = max((n + target_cols - 1) // target_cols, max(len(g) for _s, g in groups))
+    # Textbook signal flow, left to right: power -> input/timing -> control
+    # -> driver/output -> indicator. Ranked by the first matching role
+    # keyword found inside each group.
+    _FLOW_ROLE_ORDER = (
+        "power", "supply", "input", "timing", "sense", "interface",
+        "control", "processing", "driver", "switch", "output", "load",
+        "indicator", "feedback", "protection",
+    )
 
-    columns: List[List[Dict[str, Any]]] = [[]]
+    def _flow_rank(comps: List[Dict[str, Any]]) -> int:
+        for i, kw in enumerate(_FLOW_ROLE_ORDER):
+            if any(kw in str(c.get("role") or "").lower() for c in comps):
+                return i
+        return len(_FLOW_ROLE_ORDER)
+
+    groups.sort(key=lambda g: _flow_rank(g[1]))
+
+    MAX_ROWS_PER_COL = 4  # keep columns short so the sheet grows sideways
+    columns: List[List[Dict[str, Any]]] = []
     for _sub, comps in groups:
-        if columns[-1] and len(columns[-1]) + len(comps) > max_rows:
-            columns.append([])
-        columns[-1].extend(comps)
+        for i in range(0, len(comps), MAX_ROWS_PER_COL):
+            columns.append(list(comps[i:i + MAX_ROWS_PER_COL]))
+    if not columns:
+        columns = [[comp for comp, _lib, _sym in placed]]
 
     def layout_positions(col_dx: float, row_dy: float) -> Dict[str, Tuple[float, float]]:
         positions: Dict[str, Tuple[float, float]] = {}
@@ -2041,7 +1987,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                 mcp = _McpSession(session)
 
                 placed_ok = False
-                for col_dx, row_dy in ((55.0, 42.0), (75.0, 60.0), (100.0, 80.0)):
+                for col_dx, row_dy in ((45.0, 36.0), (55.0, 42.0), (75.0, 60.0), (100.0, 80.0)):
                     columns_x = [50.0 + i * col_dx for i in range(len(columns))]
                     await mcp.call("create_schematic", {"name": safe_name})
                     positions = layout_positions(col_dx, row_dy)
@@ -2140,6 +2086,26 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                 label_anchor_points: Set[Tuple[float, float]] = set()
                 power_stub_points: Dict[Tuple[float, float], str] = {}
                 pending_flags: List[Tuple[str, float, float, Tuple[float, float]]] = []
+                # Textbook rails: members collected during the net loop, then
+                # drawn as one shared horizontal rail per power net.
+                rail_members: Dict[str, List[Tuple[str, str, Tuple[float, float]]]] = {}
+
+                def stub_end(
+                    ref: str, pin: str, pos: Tuple[float, float]
+                ) -> Tuple[float, float]:
+                    """Pin position shifted outward from its symbol.
+
+                    The outward direction is judged against the instance
+                    anchor of the unit that OWNS the pin - a multi-unit
+                    symbol stacks its units, so unit 1's anchor would
+                    turn side pins of lower units into bottom pins and
+                    send stubs straight through neighbouring pins.
+                    """
+                    cx, cy = pin_anchors.get((ref, pin), positions.get(ref, pos))
+                    dx, dy = pos[0] - cx, pos[1] - cy
+                    if abs(dx) >= abs(dy):
+                        return (pos[0] + (7.62 if dx >= 0 else -7.62), pos[1])
+                    return (pos[0], pos[1] + (7.62 if dy >= 0 else -7.62))
                 # Layout midline: vertical stubs (pins above/below a symbol)
                 # carry their label sideways; pointing the text at the
                 # nearer outside margin keeps it off the IC body, the trunk
@@ -2241,49 +2207,13 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                         # connectivity the gate must verify
                         dropped_pins.update((r, p) for r, p, _pos in members)
 
-                    def stub_end(
-                        ref: str, pin: str, pos: Tuple[float, float]
-                    ) -> Tuple[float, float]:
-                        """Pin position shifted outward from its symbol.
-
-                        The outward direction is judged against the instance
-                        anchor of the unit that OWNS the pin - a multi-unit
-                        symbol stacks its units, so unit 1's anchor would
-                        turn side pins of lower units into bottom pins and
-                        send stubs straight through neighbouring pins.
-
-                        Power symbols and their value text sitting one grid
-                        off the pin still render over the pin-number column
-                        and the neighboring pin names (KiCad 10 always draws
-                        label/symbol text left-to-right from its anchor), so
-                        rail stubs clear the whole pin-name strip.
-                        """
-                        cx, cy = pin_anchors.get((ref, pin), positions.get(ref, pos))
-                        dx, dy = pos[0] - cx, pos[1] - cy
-                        if abs(dx) >= abs(dy):
-                            return (pos[0] + (7.62 if dx >= 0 else -7.62), pos[1])
-                        return (pos[0], pos[1] + (7.62 if dy >= 0 else -7.62))
-
                     if rail:
-                        for ref, pin, pos in members:
-                            ex, ey = stub_end(ref, pin, pos)
-                            await mcp.call(
-                                "add_wire",
-                                {"start_pos": [pos[0], pos[1]], "end_pos": [ex, ey]},
-                            )
-                            drawn_segments.append((pos[0], pos[1], ex, ey, rail))
-                            power_stub_points[(ex, ey)] = rail
-                            pwr_i += 1
-                            await mcp.call(
-                                "add_component",
-                                {
-                                    "lib_id": f"power:{rail}",
-                                    "reference": f"#PWR{pwr_i:02d}",
-                                    "value": rail,
-                                    "position": [ex, ey],
-                                    "footprint": "",
-                                },
-                            )
+                        # Textbook-style shared rail: collect members now,
+                        # draw one horizontal VCC rail above / GND rail below
+                        # the placed symbols after the net loop. Each pin
+                        # reaches its lane in the column gutter (never
+                        # crossing a symbol) and drops/rises to the rail.
+                        rail_members.setdefault(rail, []).extend(members)
                         # One PWR_FLAG per power net keeps ERC quiet about
                         # undriven power inputs - unless a member already
                         # drives the rail (a regulator's power-output pin,
@@ -2293,13 +2223,7 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                             for r, p, _pos in members
                         )
                         if not net_has_driver:
-                            # flags are placed after ALL nets are wired, when
-                            # every label anchor and wire endpoint is known -
-                            # an in-loop flag can otherwise land on a label
-                            # drawn later and join the wrong net
-                            ref, _pin, pos = members[0]
-                            ex, ey = stub_end(ref, _pin, pos)
-                            pending_flags.append((rail, ex, ey, pos))
+                            flagged_rails.add(rail)
                     else:
                         label = _safe_label(net_name)
                         # KiCad draws label text left-to-right starting at
@@ -2340,6 +2264,114 @@ async def generate_kicad_artifacts_via_mcp(ir: Dict[str, Any]) -> Dict[str, Any]
                                 {"text": label, "position": [end[0], end[1]]},
                             )
                             label_anchor_points.add(end)
+
+                # Shared power rails, textbook style: one horizontal VCC rail
+                # above the symbols and one GND rail below. Each rail pin
+                # escapes its symbol horizontally into the nearest column
+                # gutter lane (never crossing a symbol body), then runs
+                # vertically to the rail. A single power symbol on the rail's
+                # left end drives it for ERC.
+                all_pin_ys = [py for _px, py in pin_positions.values()] or [60.0]
+
+                def _snap(v: float) -> float:
+                    return round(round(v / 1.27) * 1.27, 2)
+
+                def _lane_x_for(ref: str, pos: Tuple[float, float], to_right: bool) -> float:
+                    anchor_x = positions.get(ref, pos)[0]
+                    idx = min(
+                        range(len(columns_x)),
+                        key=lambda i: abs(columns_x[i] - anchor_x),
+                    )
+                    cx = columns_x[idx]
+                    if to_right:
+                        neighbor = (
+                            columns_x[idx + 1]
+                            if idx + 1 < len(columns_x)
+                            else cx + col_dx
+                        )
+                    else:
+                        neighbor = columns_x[idx - 1] if idx > 0 else cx - col_dx
+                    return _snap((cx + neighbor) / 2.0)
+
+                for rail, members in sorted(rail_members.items()):
+                    if not members:
+                        continue
+                    is_gnd = rail == "GND"
+                    rail_y = _snap(
+                        (max(all_pin_ys) + 12.7) if is_gnd else (min(all_pin_ys) - 12.7)
+                    )
+                    lane_ys: Dict[float, List[float]] = {}
+                    for ref, pin, pos in members:
+                        cx, cy = pin_anchors.get(
+                            (ref, pin), positions.get(ref, pos)
+                        )
+                        dx, dy = pos[0] - cx, pos[1] - cy
+                        if abs(dx) >= abs(dy):
+                            # Side pin: straight horizontal run to the lane.
+                            to_right = dx >= 0
+                            lane = _lane_x_for(ref, pos, to_right)
+                            seg_pts = [
+                                (pos[0], pos[1]),
+                                (lane, pos[1]),
+                                (lane, rail_y),
+                            ]
+                        else:
+                            # Top/bottom pin: dogleg one grid off the pin,
+                            # then horizontally to the lane on the side the
+                            # pin already leans toward.
+                            to_right = pos[0] >= cx
+                            lane = _lane_x_for(ref, pos, to_right)
+                            step = 2.54 if dy >= 0 else -2.54
+                            seg_pts = [
+                                (pos[0], pos[1]),
+                                (pos[0], pos[1] + step),
+                                (lane, pos[1] + step),
+                                (lane, rail_y),
+                            ]
+                        for a, b in zip(seg_pts, seg_pts[1:]):
+                            if abs(a[0] - b[0]) < _EPS and abs(a[1] - b[1]) < _EPS:
+                                continue
+                            await mcp.call(
+                                "add_wire",
+                                {"start_pos": [a[0], a[1]], "end_pos": [b[0], b[1]]},
+                            )
+                            drawn_segments.append((a[0], a[1], b[0], b[1], rail))
+                        lane_ys.setdefault(lane, []).append(rail_y)
+                    if not lane_ys:
+                        continue
+                    lanes = sorted(lane_ys)
+                    # One power symbol at the left end drives the rail; the
+                    # rail must extend UNDER the symbol so its pin touches a
+                    # live wire instead of dangling past the rail's end.
+                    pwr_i += 1
+                    sym_x = _snap(lanes[0] - 5.08)
+                    await mcp.call(
+                        "add_wire",
+                        {
+                            "start_pos": [sym_x, rail_y],
+                            "end_pos": [lanes[-1], rail_y],
+                        },
+                    )
+                    drawn_segments.append((sym_x, rail_y, lanes[-1], rail_y, rail))
+                    for lane in lanes:
+                        power_stub_points[(lane, rail_y)] = rail
+                        # T-junction of the vertical drop into the rail; the
+                        # right end of the rail is its only real endpoint.
+                        if lane != lanes[-1]:
+                            await mcp.call(
+                                "add_junction", {"position": [lane, rail_y]}
+                            )
+                    await mcp.call(
+                        "add_component",
+                        {
+                            "lib_id": f"power:{rail}",
+                            "reference": f"#PWR{pwr_i:02d}",
+                            "value": rail,
+                            "position": [sym_x, rail_y],
+                            "footprint": "",
+                        },
+                    )
+                    power_stub_points[(sym_x, rail_y)] = rail
 
                 # PWR_FLAG for non-rail nets that feed power inputs (e.g. a
                 # connector-fed VBUS_F): the flag's power output satisfies

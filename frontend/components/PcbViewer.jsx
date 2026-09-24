@@ -21,7 +21,7 @@ import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import DownloadIcon from '@mui/icons-material/Download';
 import { downloadImage } from '../lib/downloadUtils';
 
-export default function PcbViewer({ layout, image }) {
+export default function PcbViewer({ layout, image, fillHeight = false }) {
   const [zoom, setZoom] = useState(1);
   const [fullscreen, setFullscreen] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -90,8 +90,10 @@ export default function PcbViewer({ layout, image }) {
       return imgData;
     }
 
-    // Check if it's an SVG string
-    if (imgData.trim().startsWith('<svg')) {
+    // Check if it's an SVG string (KiCad CLI exports start with an XML
+    // declaration, hand-drawn ones with <svg directly)
+    const trimmed = imgData.trim();
+    if (trimmed.startsWith('<svg') || trimmed.startsWith('<?xml')) {
       // SVG needs to be URI-encoded and use svg+xml MIME type
       return `data:image/svg+xml,${encodeURIComponent(imgData)}`;
     }
@@ -107,8 +109,8 @@ export default function PcbViewer({ layout, image }) {
         justifyContent: 'center',
         alignItems: 'center',
         overflow: 'auto',
-        height: fullscreen ? '80vh' : { xs: 400, md: 600 },
-        bgcolor: '#2e7d32', // PCB green color
+        height: fullscreen ? '80vh' : (fillHeight ? '100%' : { xs: 400, md: 600 }),
+        bgcolor: '#263238', // neutral dark stage; the 3D render carries its own colors
         borderRadius: 1
       }}
     >
@@ -127,7 +129,7 @@ export default function PcbViewer({ layout, image }) {
             }}
             style={{
               maxWidth: '100%',
-              maxHeight: fullscreen ? '100%' : '580px',
+              maxHeight: fullscreen ? '100%' : (fillHeight ? '100%' : '580px'),
               transform: `scale(${zoom})`,
               transition: 'transform 0.3s ease',
               display: imageError ? 'none' : 'block'
