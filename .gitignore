@@ -94,8 +94,9 @@ dump.rdb
 *.swp
 *~
 
-# Model files
+# Model files (ML weights - NOT the backend's SQLAlchemy models package)
 models/
+!backend/models/
 *.pkl
 *.pth
 *.h5
@@ -134,3 +135,6 @@ eda_tools/_*.svg
 
 # Local debugging workspace (schematic/PCB audits for a specific design)
 _debug89/
+
+# Local tooling binaries (freerouting jars are downloaded at setup)
+eda_tools/tools/*.jar

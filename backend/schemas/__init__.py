@@ -4,7 +4,8 @@ from schemas.circuit_design import (
     CircuitDesignResponse,
     CircuitDesignSummary,
     CircuitDesignList,
-    BatchDeleteRequest
+    BatchDeleteRequest,
+    CircuitChatRequest
 )
 from schemas.design_request import DesignRequest
 from schemas.design_status import DesignStatus
@@ -16,6 +17,7 @@ __all__ = [
     "CircuitDesignSummary",
     "CircuitDesignList",
     "BatchDeleteRequest",
+    "CircuitChatRequest",
     "DesignRequest",
     "DesignStatus"
 ]

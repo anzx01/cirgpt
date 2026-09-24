@@ -70,6 +70,7 @@ def init_db() -> None:
             ("schematic_png", "TEXT"),
             ("simulation_status", "VARCHAR(50)"),
             ("circuit_explanation", "TEXT"),
+            ("chat_messages", "TEXT"),
         ],
     }
     raw_conn = engine.connect()

@@ -24,6 +24,7 @@ class CircuitDesignUpdate(BaseModel):
     schematic_png: Optional[str] = None
     schematic_pages: Optional[Dict[str, Any]] = None
     circuit_explanation: Optional[Dict[str, Any]] = None
+    chat_messages: Optional[List[Dict[str, Any]]] = None
     simulation_results: Optional[Dict[str, Any]] = None
     simulation_status: Optional[str] = None
     pcb_layout: Optional[Dict[str, Any]] = None
@@ -52,6 +53,7 @@ class CircuitDesignResponse(BaseModel):
     schematic_png: Optional[str] = None
     schematic_pages: Optional[Dict[str, Any]] = None
     circuit_explanation: Optional[Dict[str, Any]] = None
+    chat_messages: Optional[List[Dict[str, Any]]] = None
     simulation_results: Optional[Dict[str, Any]] = None
     simulation_status: Optional[str] = None
     pcb_layout: Optional[Dict[str, Any]] = None
@@ -98,3 +100,29 @@ class CircuitDesignList(BaseModel):
 class BatchDeleteRequest(BaseModel):
     """IDs of designs to delete in one call (project list multi-select)"""
     ids: List[int] = Field(..., description="Design IDs to delete; empty list is rejected")
+
+
+class CircuitChatRequest(BaseModel):
+    """One natural-language modification instruction for a stored design"""
+    message: str = Field("", max_length=4000,
+                         description="修改指令或追问，例如：把 LED 换成蜂鸣器")
+    attachments: List["ChatAttachment"] = Field(default_factory=list,
+                                                description="随消息发送的图片/文档附件")
+
+
+class ChatAttachment(BaseModel):
+    """One attachment on a chat message.
+
+    Images arrive as downscaled base64 (client-side) and are forwarded to the
+    vision-capable model. Documents arrive either as extracted text (plain
+    text files are read client-side) or as base64 for server-side extraction
+    (PDF).
+    """
+    kind: str = Field(..., description="image | document")
+    name: str = Field("", max_length=200)
+    mime_type: Optional[str] = None
+    data_base64: Optional[str] = None  # image data OR raw pdf bytes
+    text: Optional[str] = None  # extracted text (client-side for plain text)
+
+
+CircuitChatRequest.model_rebuild()

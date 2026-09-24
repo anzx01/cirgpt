@@ -5,6 +5,8 @@ import logging
 import inspect
 import json
 import uuid
+import base64
+import io
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy import func
@@ -246,65 +248,12 @@ class CircuitService:
                 warnings = circuit_ir.get("warnings") or ["Unsupported circuit request"]
                 raise ValueError(warnings[0])
 
-            # Step 2: Generate netlist from IR
-            await self._update_progress(progress_callback, design_id,
-                                       "Generating SPICE netlist", 30)
-            netlist = await self._generate_netlist_from_ir(circuit_ir)
-
-            # Step 3: Generate schematic
-            await self._update_progress(progress_callback, design_id,
-                                       "Generating schematic", 50)
-            schematic_result = await self._generate_schematic(netlist, circuit_ir)
-
-            # Step 4: Run simulation
-            await self._update_progress(progress_callback, design_id,
-                                       "Running circuit simulation", 70)
-            simulation_result = await self._simulate_circuit(netlist, circuit_ir)
-
-            # Step 5: Generate PCB
-            await self._update_progress(progress_callback, design_id,
-                                       "Generating experimental PCB preview", 85)
-            pcb_result = await self._generate_pcb(netlist, circuit_ir)
-
-            # Step 6: Generate BOM
-            await self._update_progress(progress_callback, design_id,
-                                       "Generating bill of materials", 95)
-            bom_result = await self._generate_bom(netlist, circuit_ir, f"Circuit_{design_id}")
-
-            validation = self._build_validation_report(
-                circuit_ir,
-                simulation_result,
-                pcb_result,
-                schematic_result,
-                skipped_components=schematic_result.get("skipped_components") or [],
-            )
-            artifacts = self._build_artifacts(
-                netlist=netlist,
-                schematic_svg=schematic_result.get("svg"),
-                kicad_schematic=schematic_result.get("kicad_schematic"),
-                skidl_netlist=schematic_result.get("skidl_netlist"),
-                erc_json=schematic_result.get("erc_json"),
-                simulation_result=simulation_result.get("results"),
-                pcb_layout=pcb_result.get("layout"),
-                bom=bom_result.get("bom"),
-                validation=validation,
-            )
+            results = await self._run_eda_pipeline(design, circuit_ir, progress_callback)
 
             # Update design with results
             design.circuit_ir = circuit_ir
             design.parsed_requirements = circuit_ir
-            design.netlist = netlist
-            design.schematic_svg = schematic_result.get("svg")
-            design.schematic_pages = schematic_result.get("schematic_pages")
-            design.simulation_results = simulation_result.get("results")
-            design.simulation_status = simulation_result.get("results", {}).get("status")
-            design.pcb_layout = pcb_result.get("layout")
-            design.pcb_image = pcb_result.get("layout", {}).get("visualization")
-            design.pcb_gerber_files = None
-            design.bom = bom_result.get("bom")
-            design.estimated_cost = bom_result.get("bom", {}).get("summary", {}).get("total_cost")
-            design.validation = validation
-            design.artifacts = artifacts
+            self._apply_pipeline_results(design, results)
             design.status = "completed"
             design.progress = 100
             design.current_step = "Design generation complete"
@@ -337,6 +286,320 @@ class CircuitService:
                                        f"Error: {str(e)}", 0, error=True)
 
             raise
+
+    async def _run_eda_pipeline(self, design, circuit_ir: Dict[str, Any],
+                                progress_callback=None) -> Dict[str, Any]:
+        """Steps 2-6 of the generation pipeline, starting from a CircuitIR:
+        netlist -> schematic -> simulation -> PCB -> BOM, plus the validation
+        report and downloadable artifacts.
+
+        Shared by fresh generation and chat-driven revision. Does NOT touch
+        the database; the caller assigns the returned fields to the design.
+        """
+        design_id = design.id
+
+        await self._update_progress(progress_callback, design_id,
+                                   "Generating SPICE netlist", 30)
+        netlist = await self._generate_netlist_from_ir(circuit_ir)
+
+        await self._update_progress(progress_callback, design_id,
+                                   "Generating schematic", 50)
+        schematic_result = await self._generate_schematic(netlist, circuit_ir)
+
+        await self._update_progress(progress_callback, design_id,
+                                   "Running circuit simulation", 70)
+        simulation_result = await self._simulate_circuit(netlist, circuit_ir)
+
+        await self._update_progress(progress_callback, design_id,
+                                   "Generating experimental PCB preview", 85)
+        pcb_result = await self._generate_pcb(netlist, circuit_ir)
+
+        # Manufacturable pipeline text files (Gerbers/drill/DRC/board)
+        # ride on the layout as _mfg_artifacts; fold them into the
+        # downloadable artifact set.
+        mfg_artifacts = (pcb_result.get("layout") or {}).pop("_mfg_artifacts", None)
+
+        await self._update_progress(progress_callback, design_id,
+                                   "Generating bill of materials", 95)
+        bom_result = await self._generate_bom(netlist, circuit_ir, f"Circuit_{design_id}")
+
+        validation = self._build_validation_report(
+            circuit_ir,
+            simulation_result,
+            pcb_result,
+            schematic_result,
+            skipped_components=schematic_result.get("skipped_components") or [],
+        )
+        artifacts = self._build_artifacts(
+            netlist=netlist,
+            schematic_svg=schematic_result.get("svg"),
+            kicad_schematic=schematic_result.get("kicad_schematic"),
+            skidl_netlist=schematic_result.get("skidl_netlist"),
+            erc_json=schematic_result.get("erc_json"),
+            simulation_result=simulation_result.get("results"),
+            pcb_layout=pcb_result.get("layout"),
+            bom=bom_result.get("bom"),
+            validation=validation,
+        )
+        if mfg_artifacts:
+            for name, content in mfg_artifacts.items():
+                artifacts[f"mfg_{name}"] = {
+                    "filename": name,
+                    "media_type": "text/plain",
+                    "content": content,
+                }
+
+        return {
+            "netlist": netlist,
+            "schematic_svg": schematic_result.get("svg"),
+            "schematic_pages": schematic_result.get("schematic_pages"),
+            "simulation_results": simulation_result.get("results"),
+            "simulation_status": simulation_result.get("results", {}).get("status"),
+            "pcb_layout": pcb_result.get("layout"),
+            "pcb_image": pcb_result.get("layout", {}).get("visualization"),
+            "bom": bom_result.get("bom"),
+            "estimated_cost": bom_result.get("bom", {}).get("summary", {}).get("total_cost"),
+            "validation": validation,
+            "artifacts": artifacts,
+        }
+
+    @staticmethod
+    def _apply_pipeline_results(design, results: Dict[str, Any]) -> None:
+        """Assign pipeline outputs (and refresh the explanation) onto the design."""
+        design.netlist = results["netlist"]
+        design.schematic_svg = results["schematic_svg"]
+        design.schematic_pages = results["schematic_pages"]
+        design.simulation_results = results["simulation_results"]
+        design.simulation_status = results["simulation_status"]
+        design.pcb_layout = results["pcb_layout"]
+        design.pcb_image = results["pcb_image"]
+        design.pcb_gerber_files = None
+        design.bom = results["bom"]
+        design.estimated_cost = results["estimated_cost"]
+        design.validation = results["validation"]
+        design.artifacts = results["artifacts"]
+
+    # --- chat attachment handling -----------------------------------------
+
+    # Kept small: images are stored inside chat_messages in SQLite, and the
+    # same base64 is re-sent to DeepSeek on every revision turn.
+    MAX_IMAGE_BYTES = 1_500_000          # per image after client downscale
+    MAX_IMAGES_PER_MESSAGE = 4
+    MAX_DOC_TEXT_CHARS = 20_000          # per document excerpt
+    _TEXTUAL_MIMES = {
+        "text/plain", "text/markdown", "text/csv", "application/json",
+        "text/x-log", "text/html",
+    }
+
+    @classmethod
+    def _process_chat_attachments(cls, attachments) -> List[Dict[str, Any]]:
+        """Validate and normalize incoming chat attachments.
+
+        Returns entries safe to persist on the chat message and to forward
+        to the AI service:
+        - image: {kind, name, mime_type, data_base64}
+        - document: {kind, name, mime_type, text}
+        Raises ValueError with a user-facing message on bad input.
+        """
+        processed: List[Dict[str, Any]] = []
+        image_count = 0
+        for att in attachments or []:
+            kind = (att.kind or "").lower()
+            if kind == "image":
+                image_count += 1
+                if image_count > cls.MAX_IMAGES_PER_MESSAGE:
+                    raise ValueError("每条消息最多附带 4 张图片")
+                data = att.data_base64 or ""
+                if not data:
+                    raise ValueError(f"图片 {att.name or ''} 缺少数据")
+                try:
+                    size = len(base64.b64decode(data, validate=False))
+                except Exception:
+                    raise ValueError(f"图片 {att.name or ''} 编码无效")
+                if size > cls.MAX_IMAGE_BYTES:
+                    raise ValueError(f"图片 {att.name or ''} 过大（压缩后需 ≤1.5MB）")
+                processed.append({
+                    "kind": "image",
+                    "name": att.name or "image.png",
+                    "mime_type": att.mime_type or "image/png",
+                    "data_base64": data,
+                })
+            elif kind == "document":
+                mime = (att.mime_type or "").lower()
+                text = att.text
+                if text is None and att.data_base64 and "pdf" in mime:
+                    try:
+                        import pypdf  # lazy: only PDF attachments need it
+                        pdf_bytes = base64.b64decode(att.data_base64)
+                        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+                        pages = [page.extract_text() or "" for page in reader.pages[:20]]
+                        text = "\n".join(pages)
+                    except Exception as exc:
+                        raise ValueError(f"PDF {att.name or ''} 解析失败：{exc}")
+                if not text or not text.strip():
+                    raise ValueError(
+                        f"文档 {att.name or ''} 无法提取文本"
+                        "（支持纯文本/Markdown/CSV/JSON/PDF）"
+                    )
+                processed.append({
+                    "kind": "document",
+                    "name": att.name or "document.txt",
+                    "mime_type": mime or "text/plain",
+                    "text": text[:cls.MAX_DOC_TEXT_CHARS],
+                })
+            else:
+                raise ValueError(f"不支持的附件类型：{kind}")
+        return processed
+
+    @staticmethod
+    def _attachments_to_context(attachments: List[Dict[str, Any]],
+                                images_out: List[Dict[str, Any]]) -> str:
+        """Render document attachments as instruction context; collect images."""
+        parts = []
+        for att in attachments:
+            if att.get("kind") == "document":
+                parts.append(f"[参考文档：{att.get('name')}]\n{att.get('text')}\n[/参考文档]")
+            elif att.get("kind") == "image":
+                images_out.append(att)
+        return "\n".join(parts)
+
+    async def revise_circuit(self, design_id: int, message: str,
+                             attachments: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Apply one chat instruction (optionally with image/document
+        attachments) to a stored design.
+
+        Flow: snapshot current state -> ask the AI service for a revised IR
+        -> re-run the EDA pipeline -> refresh the circuit explanation ->
+        append the assistant reply to the chat log. On failure the snapshot
+        is restored so the previous circuit is never lost; the error is
+        reported through the chat log instead of failing the design.
+        """
+        design = await self.get_design(design_id)
+        if not design:
+            raise ValueError(f"Design {design_id} not found")
+        if not design.circuit_ir:
+            raise ValueError("该设计还没有电路数据（CircuitIR），请先生成设计")
+        # 并发防御（status==processing → 409）由 /chat 端点在调度本方法前
+        # 同步完成；这里不重复检查——端点已把 status 置为 processing。
+
+        snapshot = {
+            "circuit_ir": design.circuit_ir,
+            "parsed_requirements": design.parsed_requirements,
+            "netlist": design.netlist,
+            "schematic_svg": design.schematic_svg,
+            "schematic_pages": design.schematic_pages,
+            "simulation_results": design.simulation_results,
+            "simulation_status": design.simulation_status,
+            "pcb_layout": design.pcb_layout,
+            "pcb_image": design.pcb_image,
+            "pcb_gerber_files": design.pcb_gerber_files,
+            "bom": design.bom,
+            "estimated_cost": design.estimated_cost,
+            "validation": design.validation,
+            "artifacts": design.artifacts,
+        }
+
+        def append_chat(role: str, content: str, message_attachments=None):
+            # SQLAlchemy JSON columns need copy-then-assign; in-place appends
+            # are not tracked. The list is stored trimmed to the last 40 turns.
+            messages = [m for m in (design.chat_messages or []) if isinstance(m, dict)]
+            entry = {
+                "role": role,
+                "content": content,
+                "at": datetime.utcnow().isoformat(),
+            }
+            if message_attachments:
+                entry["attachments"] = message_attachments
+            messages.append(entry)
+            design.chat_messages = messages[-40:]
+
+        def restore_snapshot():
+            for key, value in snapshot.items():
+                setattr(design, key, value)
+
+        design.status = "processing"
+        design.progress = 5
+        design.current_step = "理解修改要求"
+        design.error_message = None
+        append_chat("user", message, message_attachments=attachments)
+        self.db.commit()
+        await notify_progress(design_id, "正在理解修改要求…", 5)
+
+        try:
+            # Step 1: revise the CircuitIR via the AI service (no rule fallback)
+            await self._update_progress(None, design_id, "AI 正在修改电路结构", 15)
+            images_for_ai: List[Dict[str, Any]] = []
+            doc_context = self._attachments_to_context(attachments or [], images_for_ai)
+            full_instruction = (
+                f"{doc_context}\n\n{message}" if doc_context.strip() else message
+            )
+            http_client = get_http_client()
+            response = await http_client.post(
+                f"{self.ai_service_url}/ai/revise",
+                json={
+                    "description": design.description,
+                    "circuit_ir": design.circuit_ir,
+                    "instruction": full_instruction,
+                    "chat_history": [m for m in (design.chat_messages or [])
+                                     if m.get("role") in ("user", "assistant")][:-1],
+                    "images": [
+                        {"name": img.get("name"), "mime_type": img.get("mime_type"),
+                         "data_base64": img.get("data_base64")}
+                        for img in images_for_ai
+                    ],
+                },
+            )
+            if response.status_code != 200:
+                raise Exception(f"AI service error: {response.status_code} {response.text[:200]}")
+            revised = response.json()
+            circuit_ir = revised["circuit_ir"]
+            revision_summary = revised.get("revision_summary") or "电路已按指令修改。"
+
+            # Step 2: regenerate all artifacts from the revised IR
+            results = await self._run_eda_pipeline(design, circuit_ir)
+
+            design.circuit_ir = circuit_ir
+            design.parsed_requirements = circuit_ir
+            self._apply_pipeline_results(design, results)
+
+            # Step 3: refresh the AI explanation for the revised circuit
+            await self._update_progress(None, design_id, "正在更新电路解读", 97)
+            try:
+                explain_resp = await http_client.post(
+                    f"{self.ai_service_url}/ai/explain",
+                    json={"description": design.description, "circuit_ir": circuit_ir},
+                )
+                if explain_resp.status_code == 200:
+                    design.circuit_explanation = explain_resp.json().get("explanation")
+            except Exception as exc:  # noqa: BLE001 - explanation is best-effort
+                logger.warning(f"Explanation refresh failed after revision: {exc}")
+
+            append_chat("assistant", revision_summary)
+            design.status = "completed"
+            design.progress = 100
+            design.current_step = "电路修改完成"
+            design.completed_at = datetime.utcnow()
+            self.db.commit()
+
+            await self._update_progress(None, design_id, "电路修改完成", 100)
+            logger.info(f"✓ Circuit revision complete for design {design_id}")
+            await notify_complete(design_id)
+            return {"success": True, "design_id": design_id, "revision_summary": revision_summary}
+
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"✗ Circuit revision failed for design {design_id}: {e}")
+            restore_snapshot()
+            append_chat("assistant", f"修改失败：{e}\n电路已保持修改前的状态，请换一种说法再试。")
+            design.status = "completed"
+            design.progress = 100
+            design.current_step = "电路修改失败（已保留原电路）"
+            design.error_message = None
+            self.db.commit()
+            # Progress (not error) so the page stays healthy; the chat log
+            # carries the failure reason.
+            await notify_progress(design_id, "电路修改失败，已保留原电路", 100)
+            await notify_complete(design_id)
+            return {"success": False, "design_id": design_id, "error": str(e)}
 
     async def _parse_description(self, description: str) -> Dict[str, Any]:
         """

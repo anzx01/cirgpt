@@ -13,11 +13,12 @@ from schemas import (
     CircuitDesignResponse,
     CircuitDesignSummary,
     BatchDeleteRequest,
+    CircuitChatRequest,
     DesignStatus,
 )
 from app.services.circuit_service import CircuitService
 from app.utils.database import get_db
-from models import SessionLocal
+from models import SessionLocal, CircuitDesign
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,33 @@ async def run_generation_background(design_id: int):
     try:
         service = CircuitService(db)
         await service.generate_circuit(design_id)
+    finally:
+        db.close()
+
+
+async def run_revision_background(design_id: int, message: str, attachments=None):
+    """Run a chat-driven circuit revision with a fresh DB session.
+
+    The /chat endpoint claims the design (status=processing) before scheduling
+    this task, so any failure here — including revise_circuit's own pre-checks
+    raising before its recovery path kicks in — must release the claim, or the
+    design stays stuck in processing forever.
+    """
+    db = SessionLocal()
+    try:
+        service = CircuitService(db)
+        await service.revise_circuit(design_id, message, attachments=attachments)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Revision background task crashed for design {design_id}: {exc}")
+        try:
+            design = db.query(CircuitDesign).filter(CircuitDesign.id == design_id).first()
+            if design and design.status == "processing":
+                design.status = "completed"
+                design.progress = 100
+                design.current_step = "电路修改失败（已保留原电路）"
+                db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
     finally:
         db.close()
 
@@ -90,9 +118,14 @@ async def list_circuits(
 @router.get("/{design_id}", response_model=CircuitDesignResponse, summary="Get circuit design")
 async def get_circuit(
     design_id: int,
-    service: CircuitService = Depends(get_circuit_service)
+    service: CircuitService = Depends(get_circuit_service),
+    response: Response = None,
 ):
     """Get circuit design by ID"""
+    # Design state changes after every generation/revision; a heuristic
+    # browser cache would freeze the UI on stale data.
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
     design = await service.get_design(design_id)
     if not design:
         raise HTTPException(status_code=404, detail="Circuit design not found")
@@ -204,6 +237,58 @@ async def generate_circuit(
         "design_id": design_id,
         "job_id": job_id,
         "status": "processing"
+    }
+
+
+@router.post("/{design_id}/chat", summary="Chat: revise the circuit with one instruction")
+async def chat_revise_circuit(
+    design_id: int,
+    request: CircuitChatRequest,
+    background_tasks: BackgroundTasks,
+    service: CircuitService = Depends(get_circuit_service),
+):
+    """Apply one natural-language modification to the stored design.
+
+    Accepts optional attachments: pasted/uploaded images (forwarded to the
+    vision-capable model) and documents (plain text or PDF; extracted text
+    becomes reference context for the revision).
+
+    The revision runs asynchronously: the AI service rewrites the CircuitIR,
+    then netlist / schematic / simulation / PCB / BOM / explanation are all
+    regenerated. Progress arrives on the same design.progress / WebSocket
+    channel as generation; the chat log persists on the design. If the
+    revision fails, the previous circuit is kept untouched and the reason is
+    reported through the chat log.
+    """
+    design = await service.get_design(design_id)
+    if not design:
+        raise HTTPException(status_code=404, detail="Circuit design not found")
+    if not design.circuit_ir:
+        raise HTTPException(status_code=400, detail="该设计还没有电路数据（CircuitIR），请先生成设计")
+    if design.status == "processing":
+        raise HTTPException(status_code=409, detail="该设计正在生成或修改中，请稍候")
+    if not request.message.strip() and not request.attachments:
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+
+    try:
+        attachments = CircuitService._process_chat_attachments(request.attachments)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Claim the design synchronously so a double-submit gets 409 instead of
+    # queueing two concurrent revisions.
+    design.status = "processing"
+    design.progress = 0
+    design.current_step = "理解修改要求"
+    service.db.commit()
+
+    background_tasks.add_task(
+        run_revision_background, design_id, request.message, attachments
+    )
+    return {
+        "message": "电路修改已开始",
+        "design_id": design_id,
+        "status": "processing",
     }
 
 
