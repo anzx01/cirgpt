@@ -37,6 +37,7 @@ import {
   Bolt as PowerOnIcon
 } from '@mui/icons-material';
 import SchematicViewer from '../../../components/SchematicViewer';
+import CircuitExplainer from '../../../components/CircuitExplainer';
 import SimulationViewer from '../../../components/SimulationViewer';
 import PcbViewer from '../../../components/PcbViewer';
 import BomViewer from '../../../components/BomViewer';
@@ -564,7 +565,18 @@ export default function DesignResultPage() {
         </Tabs>
 
         <TabPanel value={tabValue} index={0}>
-          <SchematicViewer svg={design?.schematic_svg} pages={design?.schematic_pages} />
+          <Grid container spacing={2} sx={{ py: 1 }}>
+            <Grid item xs={12} lg={8} xl={9}>
+              <SchematicViewer svg={design?.schematic_svg} pages={design?.schematic_pages} />
+            </Grid>
+            <Grid item xs={12} lg={4} xl={3}>
+              <CircuitExplainer
+                designId={designId}
+                circuitIr={design?.circuit_ir}
+                initialExplanation={design?.circuit_explanation}
+              />
+            </Grid>
+          </Grid>
         </TabPanel>
 
         <TabPanel value={tabValue} index={1}>

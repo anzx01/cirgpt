@@ -481,6 +481,51 @@ class CircuitService:
         self.db.refresh(design)
         return simulation_result
 
+    async def generate_explanation(self, design_id: int, refresh: bool = False) -> Dict[str, Any]:
+        """Generate (or return cached) circuit explanation for a design.
+
+        The explanation is produced by the AI service from the stored
+        CircuitIR and persisted on the design so it is only generated once.
+        ``refresh=True`` regenerates even when a cached one exists.
+        """
+        design = await self.get_design(design_id)
+        if not design:
+            raise ValueError(f"Design {design_id} not found")
+        if not design.circuit_ir:
+            raise ValueError("该设计还没有 CircuitIR，请先生成设计")
+
+        if design.circuit_explanation and not refresh:
+            return {
+                "explanation": design.circuit_explanation,
+                "source": design.circuit_explanation.get("source", "unknown"),
+                "cached": True,
+            }
+
+        http_client = get_http_client()
+        response = await http_client.post(
+            f"{self.ai_service_url}/ai/explain",
+            json={
+                "description": design.description,
+                "circuit_ir": design.circuit_ir,
+            },
+        )
+        if response.status_code != 200:
+            raise Exception(f"AI service error: {response.status_code} {response.text}")
+
+        data = response.json()
+        explanation = data.get("explanation") or {}
+        design.circuit_explanation = explanation
+        self.db.commit()
+        logger.info(
+            f"Stored circuit explanation for design {design_id} "
+            f"(source={data.get('source')})"
+        )
+        return {
+            "explanation": explanation,
+            "source": data.get("source"),
+            "cached": False,
+        }
+
     async def _generate_pcb(self, netlist: str, circuit_ir: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate PCB layout using EDA service

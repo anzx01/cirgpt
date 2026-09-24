@@ -254,6 +254,29 @@ async def simulate_circuit(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.post("/{design_id}/explain", summary="Generate circuit explanation")
+async def explain_circuit(
+    design_id: int,
+    refresh: bool = False,
+    service: CircuitService = Depends(get_circuit_service),
+):
+    """Generate a structured Chinese walkthrough (电路原理/连接关系/器件作用)
+    of the completed design from its CircuitIR.
+
+    The result is persisted on the design; subsequent calls return the cached
+    explanation unless ``refresh=true``. When the AI narrative is unavailable
+    the AI service returns a deterministic structural summary and marks it
+    with ``source="rule"`` so the UI can disclose the downgrade.
+    """
+    try:
+        return await service.generate_explanation(design_id, refresh=refresh)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Explanation generation failed for design {design_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/{design_id}/status", response_model=DesignStatus, summary="Get generation status")
 async def get_circuit_status(
     design_id: int,

@@ -15,6 +15,7 @@ from nlp.circuit_ir import (
 )
 from nlp.circuit_generator import generate_circuit_design
 from nlp.deepseek_parser import deepseek_configured, parse_description_with_deepseek
+from nlp.explainer import build_rule_explanation, explain_circuit_with_deepseek
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["AI"])
@@ -28,6 +29,12 @@ class ParseRequest(BaseModel):
 class GenerateRequest(BaseModel):
     """Request for generating circuit design"""
     requirements: Dict[str, Any]
+
+
+class ExplainRequest(BaseModel):
+    """Request for explaining a generated circuit from its CircuitIR"""
+    description: str
+    circuit_ir: Dict[str, Any]
 
 
 class ParseResponse(BaseModel):
@@ -150,6 +157,40 @@ async def generate_circuit(request: GenerateRequest) -> GenerateResponse:
             status_code=500,
             detail=f"Failed to generate circuit: {str(e)}"
         )
+
+
+@router.post("/explain", summary="Explain a generated circuit from its CircuitIR")
+async def explain_circuit(request: ExplainRequest) -> Dict[str, Any]:
+    """Generate a structured Chinese walkthrough (原理/连接/器件作用) of a
+    generated circuit.
+
+    Prefers the DeepSeek narrative; falls back to a deterministic structural
+    summary of the IR when DeepSeek is unavailable. The ``source`` field
+    tells the two apart ("deepseek" vs "rule") so the UI can disclose the
+    downgrade honestly.
+    """
+    circuit_ir = request.circuit_ir or {}
+    if not circuit_ir.get("components"):
+        raise HTTPException(
+            status_code=400,
+            detail="circuit_ir.components is empty; nothing to explain",
+        )
+
+    source = "rule"
+    warning = None
+    try:
+        explanation = await explain_circuit_with_deepseek(request.description, circuit_ir)
+        source = "deepseek"
+    except Exception as exc:
+        logger.warning(f"DeepSeek explanation failed, using structural summary: {exc}")
+        explanation = build_rule_explanation(circuit_ir)
+        warning = f"AI 解读生成失败（{exc}），已回退为电路结构摘要。"
+
+    explanation["source"] = source
+    if warning:
+        explanation.setdefault("warnings", []).append(warning)
+
+    return {"explanation": explanation, "source": source, "success": True}
 
 
 @router.get("/models")

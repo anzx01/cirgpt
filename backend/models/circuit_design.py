@@ -23,6 +23,7 @@ class CircuitDesign(Base):
     schematic_svg = Column(Text, nullable=True)  # Schematic in SVG format
     schematic_png = Column(Text, nullable=True)  # Base64 PNG image
     schematic_pages = Column(JSON, nullable=True)  # Subsystem-paged schematic pages (v2)
+    circuit_explanation = Column(JSON, nullable=True)  # Structured circuit walkthrough (AI narrative or structural summary)
 
     # Simulation results
     simulation_results = Column(JSON, nullable=True)  # Waveform data
@@ -66,6 +67,7 @@ class CircuitDesign(Base):
             "schematic_svg": self.schematic_svg,
             "schematic_png": self.schematic_png,
             "schematic_pages": self.schematic_pages,
+            "circuit_explanation": self.circuit_explanation,
             "simulation_results": self.simulation_results,
             "simulation_status": self.simulation_status,
             "pcb_layout": self.pcb_layout,
